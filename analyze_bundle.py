@@ -1,3 +1,6 @@
+import warnings
+warnings.filterwarnings("ignore")
+
 import UnityPy
 import json
 import os
@@ -42,7 +45,6 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-# Override version si passée en argument
 if args.unity_version:
     UnityPy.config.FALLBACK_UNITY_VERSION = args.unity_version
 
@@ -50,7 +52,6 @@ print(f"🎮 Unity version : {UnityPy.config.FALLBACK_UNITY_VERSION}")
 
 os.makedirs(args.output, exist_ok=True)
 
-# Affichage des infos
 if args.hash and os.path.exists(args.hash):
     with open(args.hash, "r") as f:
         print(f"🔑 Hash catalog : {f.read().strip()}")
@@ -59,7 +60,6 @@ if args.catalog and os.path.exists(args.catalog):
     size = os.path.getsize(args.catalog)
     print(f"📦 Catalog .bin : {args.catalog} ({size // 1024} Ko)")
 
-# Trouver tous les .bundle dans le dossier
 bundle_files = glob.glob(os.path.join(args.bundle_dir, "*.bundle"))
 if not bundle_files:
     print(f"❌ Aucun fichier .bundle trouvé dans '{args.bundle_dir}'")
@@ -70,20 +70,22 @@ for b in bundle_files:
     print(f"   - {os.path.basename(b)} ({os.path.getsize(b) // 1024} Ko)")
 
 all_objects = []
+total = len(bundle_files)
 
-for bundle_path in bundle_files:
-    print(f"\n🔍 Lecture de {os.path.basename(bundle_path)}...")
+for i, bundle_path in enumerate(bundle_files, 1):
+    name = os.path.basename(bundle_path)
+    print(f"[{i}/{total}] 🔍 {name}")
     try:
         env = UnityPy.load(bundle_path)
     except Exception as e:
-        print(f"❌ Impossible de lire {os.path.basename(bundle_path)}: {e}")
+        print(f"  ❌ Impossible de lire : {e}")
         continue
 
     for obj in env.objects:
         try:
             data = obj.read()
             obj_info = {
-                "bundle": os.path.basename(bundle_path),
+                "bundle": name,
                 "path_id": obj.path_id,
                 "type": str(obj.type.name),
                 "name": getattr(data, 'name', 'Unnamed'),
@@ -95,7 +97,6 @@ for bundle_path in bundle_files:
             if hasattr(data, 'text'):
                 obj_info["text_preview"] = data.text[:500]
 
-            # Extraction des images si demandée
             if args.extract_images and obj.type.name in ["Texture2D", "Sprite"]:
                 img_dir = os.path.join(args.output, "images")
                 os.makedirs(img_dir, exist_ok=True)
@@ -105,11 +106,11 @@ for bundle_path in bundle_files:
                     img.save(img_path)
                     obj_info["image_saved"] = img_path
                 except Exception as ie:
-                    print(f"  ⚠️  Impossible d'extraire l'image {data.name}: {ie}")
+                    print(f"  ⚠️  Image {data.name}: {ie}")
 
             all_objects.append(obj_info)
         except Exception as e:
-            print(f"  ⚠️  Erreur objet {obj.path_id}: {e}")
+            print(f"  ⚠️  Objet {obj.path_id}: {e}")
 
 output_path = os.path.join(args.output, "assets.json")
 with open(output_path, "w", encoding="utf-8") as f:
@@ -117,4 +118,4 @@ with open(output_path, "w", encoding="utf-8") as f:
 
 print(f"\n✅ {len(all_objects)} objets extraits → {output_path}")
 if args.extract_images:
-    print(f"🖼  Images extraites → {os.path.join(args.output, 'images/')}")
+    print(f"🖼  Images → {os.path.join(args.output, 'images/')}")
