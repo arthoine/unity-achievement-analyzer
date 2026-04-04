@@ -27,13 +27,14 @@ parser.add_argument("--extract-images", action="store_true")
 parser.add_argument("--unity-version", default=None)
 parser.add_argument("--worker", default=None, help="Mode interne : traite un seul bundle")
 parser.add_argument("--worker-version", default=UNITY_VERSION, help="Version Unity à utiliser dans le worker")
+parser.add_argument("--no-typetree", action="store_true", help="Désactiver read_typetree dans le worker")
 args = parser.parse_args()
 
 if args.unity_version:
     UNITY_VERSION = args.unity_version
     UnityPy.config.FALLBACK_UNITY_VERSION = UNITY_VERSION
 
-# ─── MODE WORKER : traite UN seul bundle ─────────────────────────────────────────────
+# ─── MODE WORKER : traite UN seul bundle ─────────────────────────────────────────
 if args.worker:
     bundle_path = args.worker
     name = os.path.basename(bundle_path)
@@ -55,7 +56,7 @@ if args.worker:
                     "text": getattr(data, 'text', None),
                 }
 
-                if obj.type.name == "MonoBehaviour":
+                if obj.type.name == "MonoBehaviour" and not args.no_typetree:
                     try:
                         tree = obj.read_typetree()
                         if tree:
@@ -85,10 +86,9 @@ if args.worker:
         json.dump(results, f, ensure_ascii=False)
     sys.exit(0)
 
-# ─── HELPER : lance un worker avec une version donnée ────────────────────────────────
-def run_worker(bundle_path, version, output, extract_images, timeout=120):
-    """Lance le worker pour un bundle avec la version Unity spécifiée.
-    Retourne True si succès, False si crash/timeout."""
+# ─── HELPER : lance un worker ────────────────────────────────────────────────────────────
+def run_worker(bundle_path, version, output, extract_images, no_typetree=False, timeout=120):
+    """Lance le worker. Retourne True si succès (JSON non vide), False sinon."""
     out_path = os.path.join(output, os.path.basename(bundle_path) + ".json")
     cmd = [
         sys.executable, __file__,
@@ -98,10 +98,11 @@ def run_worker(bundle_path, version, output, extract_images, timeout=120):
     ]
     if extract_images:
         cmd.append("--extract-images")
+    if no_typetree:
+        cmd.append("--no-typetree")
     try:
         result = subprocess.run(cmd, timeout=timeout, capture_output=True)
         if result.returncode == 0 and os.path.exists(out_path):
-            # Vérifie que le JSON n'est pas vide
             with open(out_path, "r") as f:
                 content = json.load(f)
             if len(content) > 0:
@@ -110,7 +111,7 @@ def run_worker(bundle_path, version, output, extract_images, timeout=120):
     except subprocess.TimeoutExpired:
         return False
 
-# ─── MODE PRINCIPAL ────────────────────────────────────────────────────────────────────
+# ─── MODE PRINCIPAL ───────────────────────────────────────────────────────────────────
 print(f"🎮 Unity version : {UnityPy.config.FALLBACK_UNITY_VERSION}")
 os.makedirs(args.output, exist_ok=True)
 
@@ -137,7 +138,6 @@ for i, bundle_path in enumerate(bundle_files, 1):
     out_path = os.path.join(args.output, name + ".json")
 
     if os.path.exists(out_path):
-        # Vérifie que le fichier existant n'est pas vide (résultat d'un crash précédent)
         try:
             with open(out_path, "r") as f:
                 existing = json.load(f)
@@ -145,14 +145,14 @@ for i, bundle_path in enumerate(bundle_files, 1):
                 print(f"[{i}/{total}] ✅ déjà traité : {name}")
                 continue
         except Exception:
-            pass  # Fichier corrompu -> on le retrait
+            pass
 
     print(f"[{i}/{total}] 🔍 {name}", flush=True)
 
-    # ── Tentative 1 : version principale
+    # ── Tentative 1 : version principale + typetree
     ok = run_worker(bundle_path, UNITY_VERSION, args.output, args.extract_images)
 
-    # ── Tentatives 2+ : versions alternatives
+    # ── Tentatives 2-4 : versions alternatives + typetree
     if not ok:
         for alt_v in ALT_VERSIONS:
             print(f"  🔄 Retry {alt_v}...", end=" ", flush=True)
@@ -163,11 +163,31 @@ for i, bundle_path in enumerate(bundle_files, 1):
             else:
                 print("❌")
 
+    # ── Tentative 5 : version principale SANS typetree
     if not ok:
-        print(f"  ❌ crash sur toutes les versions")
+        print(f"  🔄 Retry sans typetree...", end=" ", flush=True)
+        ok = run_worker(bundle_path, UNITY_VERSION, args.output, args.extract_images,
+                        no_typetree=True, timeout=180)
+        if ok:
+            print("✅ OK (sans typetree)")
+
+    # ── Tentatives 6-8 : versions alternatives SANS typetree
+    if not ok:
+        for alt_v in ALT_VERSIONS:
+            print(f"  🔄 Retry {alt_v} sans typetree...", end=" ", flush=True)
+            ok = run_worker(bundle_path, alt_v, args.output, args.extract_images,
+                            no_typetree=True, timeout=180)
+            if ok:
+                print(f"✅ OK avec {alt_v} (sans typetree)")
+                break
+            else:
+                print("❌")
+
+    if not ok:
+        print(f"  ❌ crash irrécupérable")
         crashes.append(name)
 
-# ─── FUSION ──────────────────────────────────────────────────────────────────────────────────
+# ─── FUSION ───────────────────────────────────────────────────────────────────────────────
 print(f"\n📦 Fusion des résultats...")
 all_objects = []
 
@@ -187,6 +207,6 @@ with open(final_path, "w", encoding="utf-8") as f:
 
 print(f"✅ {len(all_objects)} objets extraits → {final_path}")
 if crashes:
-    print(f"❌ {len(crashes)} bundle(s) en échec : {', '.join(crashes)}")
+    print(f"❌ {len(crashes)} bundle(s) irrécupérables : {', '.join(crashes)}")
 if args.extract_images:
     print(f"🖼  Images → {os.path.join(args.output, 'images/')}")
