@@ -15,7 +15,7 @@ import argparse
 from pathlib import Path
 
 try:
-    import unitypy
+    import UnityPy
 except ImportError:
     print("[ERREUR] UnityPy n'est pas installé. Lance: pip install unitypy", file=sys.stderr)
     sys.exit(1)
@@ -29,14 +29,13 @@ def parse_bundle(bundle_path: str) -> dict | None:
     Ouvre un Asset Bundle Unity et extrait le MonoBehaviour AchievementCategoriesDataRoot.
     Retourne un dict avec les champs bruts, ou None si non trouvé.
     """
-    env = unitypy.load(bundle_path)
+    env = UnityPy.load(bundle_path)
 
     for obj in env.objects:
         if obj.type.name == "MonoBehaviour":
             data = obj.read()
             tree = data.type_tree if hasattr(data, 'type_tree') else vars(data)
 
-            # Cherche le nom AchievementCategoriesDataRoot
             name = getattr(data, 'm_Name', '') or tree.get('m_Name', '')
             if 'AchievementCategoriesDataRoot' in str(name):
                 return {
@@ -53,12 +52,6 @@ def parse_bundle(bundle_path: str) -> dict | None:
 def extract_categories(raw_data: dict) -> list[dict]:
     """
     Extrait la liste des AchievementCategoryData depuis la structure brute du MonoBehaviour.
-
-    Structure attendue:
-        data['references']['RefIds'] = [
-            { 'rid': ..., 'type': { 'class': 'AchievementCategoryData', ... }, 'data': { ... } },
-            ...
-        ]
     """
     categories = []
 
@@ -84,7 +77,6 @@ def extract_categories(raw_data: dict) -> list[dict]:
                 '_rid':                 ref.get('rid'),
             })
 
-    # Tri par id
     categories.sort(key=lambda c: c['id'] or 0)
     return categories
 
@@ -92,7 +84,6 @@ def extract_categories(raw_data: dict) -> list[dict]:
 def build_tree(categories: list[dict]) -> list[dict]:
     """
     Construit un arbre hiérarchique parent → enfants.
-    Les catégories racines ont parentId == 0.
     """
     by_id = {cat['id']: dict(cat, children=[]) for cat in categories}
     roots = []
@@ -104,7 +95,6 @@ def build_tree(categories: list[dict]) -> list[dict]:
         else:
             by_id[parent_id]['children'].append(cat)
 
-    # Tri des enfants par order
     def sort_children(node):
         node['children'].sort(key=lambda c: c['order'] or 0)
         for child in node['children']:
@@ -180,7 +170,7 @@ def main():
     parser.add_argument(
         '--flat', '-f',
         action='store_true',
-        help='Afficher la liste plate des catégories au lieu de l\'arbre'
+        help="Afficher la liste plate des catégories au lieu de l'arbre"
     )
     args = parser.parse_args()
 
