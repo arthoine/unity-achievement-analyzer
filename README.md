@@ -2,21 +2,16 @@
 
 Extraction et analyse des achievements Dofus 3 depuis les Unity Asset Bundles.
 
-## Repos liés
+> `parse_fr.py` est désormais intégré directement dans ce repo — plus besoin de `dofus-data-extractor`.
 
-- [`dofus-data-extractor`](https://github.com/arthoine/dofus-data-extractor) — Parse le fichier `fr.bin` (332 038 textes FR)
-- [`dofus-map-extractor`](https://github.com/arthoine/dofus-map-extractor) — Extraction des données de maps
+## Scripts
 
-## Pipeline complet
-
-```
-dofus-data-extractor/
-  parse_fr.py  →  fr_texts.json (332k textes FR)
-
-unity-achievement-analyzer/
-  analyze_bundle.py  →  output/assets_final.json (données brutes des bundles)
-  resolve_names.py   →  achievements_fr.json     (arbre résolu en français)
-```
+| Script | Rôle |
+|--------|------|
+| `parse_fr.py` | Parse `fr.bin` → `fr_texts.json` (332k textes FR) |
+| `analyze_bundle.py` | Parcourt les `.bundle` → `output/assets_final.json` |
+| `resolve_names.py` | Résout les nameId → `achievements_fr.json` (arbre FR) |
+| `test.py` | Debug / exploration d'un bundle unique |
 
 ## Installation
 
@@ -24,14 +19,19 @@ unity-achievement-analyzer/
 pip install -r requirements.txt
 ```
 
-## Usage
+## Pipeline complet
 
 ### Étape 1 — Générer fr_texts.json
 
 ```bash
-# Dans le repo dofus-data-extractor
+# Chemin auto-détecté (installation Dofus standard Windows)
 python parse_fr.py
-# → génère fr_texts.json
+
+# Ou avec un chemin custom
+python parse_fr.py --input "C:\...\I18n\fr.bin" --output fr_texts.json
+
+# Avec aperçu des nameIds catégories achievements
+python parse_fr.py --preview
 ```
 
 ### Étape 2 — Extraire les bundles
@@ -48,16 +48,26 @@ python analyze_bundle.py --bundle-dir data/ --output output/
 
 ```bash
 python resolve_names.py \
-  --texts  ../dofus-data-extractor/fr_texts.json \
+  --texts  fr_texts.json \
   --assets output/assets_final.json \
   --output achievements_fr.json
 ```
 
-### Options resolve_names.py
+### Options
+
+**`parse_fr.py`**
 
 | Option | Défaut | Description |
 |--------|--------|-------------|
-| `--texts` | `../dofus-data-extractor/fr_texts.json` | Chemin vers fr_texts.json |
+| `--input` | `%LOCALAPPDATA%\Ankama\...\fr.bin` | Chemin vers fr.bin |
+| `--output` | `fr_texts.json` | Fichier JSON de sortie |
+| `--preview` | false | Affiche un aperçu des nameIds achievements |
+
+**`resolve_names.py`**
+
+| Option | Défaut | Description |
+|--------|--------|-------------|
+| `--texts` | `fr_texts.json` | Chemin vers fr_texts.json |
 | `--assets` | `output/assets_final.json` | Chemin vers assets_final.json |
 | `--output` | `achievements_fr.json` | Fichier de sortie |
 | `--flat` | false | Sortie plate au lieu de l'arbre catégories→achievements |
@@ -86,7 +96,7 @@ python resolve_names.py \
 ]
 ```
 
-## Structure des fichiers sources
+## Bundles sources
 
 | Bundle | Contenu |
 |--------|---------|
