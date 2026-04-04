@@ -14,6 +14,7 @@ Usage :
     python map_monsters.py --texts fr_texts.json --assets output/assets_final.json --csv
     python map_monsters.py --texts fr_texts.json --assets output/assets_final.json --search "Bouftou"
     python map_monsters.py --texts fr_texts.json --assets output/assets_final.json --monster-id 25
+    python map_monsters.py --texts fr_texts.json --assets output/assets_final.json --debug-raw 31
     python map_monsters.py --texts fr_texts.json --assets output/assets_final.json --race-id 5
 
 Sorties :
@@ -80,7 +81,7 @@ def load_assets_final(path: str) -> list:
     return load_assets_final._cache
 
 
-def load_data(keyword: str, assets_path: str, output_dir: str) -> dict:
+def load_data(keyword: str, assets_path: str) -> dict:
     accepted = BUNDLE_CLASSES.get(keyword)
     all_objs = load_assets_final(assets_path)
     merged = {}
@@ -98,6 +99,23 @@ def load_data(keyword: str, assets_path: str, output_dir: str) -> dict:
     return merged
 
 
+def debug_raw(monster_id: int, assets_path: str):
+    """Affiche le dict brut Unity d'un monstre pour inspecter les vrais noms de champs."""
+    all_objs = load_assets_final(assets_path)
+    for obj in all_objs:
+        if "monstersdataroot" not in obj.get("bundle", ""):
+            continue
+        refs = obj.get("data", {}).get("references", {}).get("RefIds", [])
+        for r in refs:
+            d = r.get("data", {})
+            if isinstance(d, dict) and d.get("id") == monster_id:
+                print(f"\n🔍 Données brutes Unity — Monstre #{monster_id}")
+                print(f"   Classe Unity : {r.get('type', {}).get('class', '?')}")
+                print(json.dumps(d, indent=2, ensure_ascii=False))
+                return
+    print(f"❌ Monstre {monster_id} introuvable dans monstersdataroot")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Mappe les monstres Dofus 3 avec leurs noms FR")
     parser.add_argument("--texts",      default=DEFAULT_TEXTS)
@@ -106,20 +124,30 @@ def main():
     parser.add_argument("--csv",        action="store_true")
     parser.add_argument("--search",     default=None,  help="Recherche par nom")
     parser.add_argument("--monster-id", default=None,  type=int)
+    parser.add_argument("--debug-raw",  default=None,  type=int, help="Dump brut Unity d'un monstre (débogage)")
     parser.add_argument("--race-id",    default=None,  type=int, help="Lister les monstres d'une race")
     args = parser.parse_args()
 
     os.makedirs(args.output, exist_ok=True)
+
+    # Mode debug-raw : pas besoin de charger les textes ni de builder tout
+    if args.debug_raw:
+        print(f"📖 Textes FR : {args.texts}")
+        load_texts(args.texts)  # juste pour valider le fichier
+        print("📦 Chargement assets…")
+        load_assets_final(args.assets)
+        debug_raw(args.debug_raw, args.assets)
+        return
 
     print(f"📖 Textes FR : {args.texts}")
     texts = load_texts(args.texts)
     print(f"   → {len(texts):,} textes (IDs {min(texts)} → {max(texts)})")
 
     print("📦 Chargement bundles…")
-    monsters_raw    = load_data("monstersdataroot",          args.assets, args.output)
-    races_raw       = load_data("monsterracesdataroot",      args.assets, args.output)
-    superraces_raw  = load_data("monstersuperracesdataroot", args.assets, args.output)
-    minibosses_raw  = load_data("monsterminibossesdataroot", args.assets, args.output)
+    monsters_raw    = load_data("monstersdataroot",          args.assets)
+    races_raw       = load_data("monsterracesdataroot",      args.assets)
+    superraces_raw  = load_data("monstersuperracesdataroot", args.assets)
+    minibosses_raw  = load_data("monsterminibossesdataroot", args.assets)
 
     print(f"   Monstres    : {len(monsters_raw):,}")
     print(f"   Races       : {len(races_raw):,}")
@@ -130,7 +158,7 @@ def main():
         print("\n⚠️  Aucun monstre trouvé.")
         sys.exit(1)
 
-    # ─── Super-races ──────────────────────────────────────────────────
+    # ─── Super-races
     superraces_named = {}
     for sid, d in superraces_raw.items():
         superraces_named[sid] = {
@@ -138,7 +166,7 @@ def main():
             "name": t(texts, d.get("nameId")),
         }
 
-    # ─── Races ─────────────────────────────────────────────────────────
+    # ─── Races
     races_named = {}
     for rid, d in races_raw.items():
         sr = superraces_named.get(d.get("superRaceId", 0), {})
@@ -149,19 +177,18 @@ def main():
             "superRaceName": sr.get("name", ""),
         }
 
-    # ─── Mini-boss index (id monstre → True) ─────────────────────────────
+    # ─── Mini-boss index
     miniboss_ids = set()
     for mb in minibosses_raw.values():
         mid = mb.get("monsterId") or mb.get("id")
         if mid:
             miniboss_ids.add(mid)
 
-    # ─── Monstres ───────────────────────────────────────────────────────
+    # ─── Monstres
     monsters_named = {}
     for mid, d in monsters_raw.items():
         race = races_named.get(d.get("raceId", 0), {})
 
-        # Grades : liste de dicts avec level + xpRatio
         grades = []
         for g in d.get("grades", []):
             grades.append({
@@ -174,7 +201,6 @@ def main():
                 "maxDroppedKamas": g.get("maxDroppedKamas", 0),
             })
 
-        # Niveau min/max sur tous les grades
         levels = [g["level"] for g in grades if g["level"] > 0]
         level_min = min(levels) if levels else 0
         level_max = max(levels) if levels else 0
@@ -198,7 +224,7 @@ def main():
             "favoriteSubAreaBonus": d.get("favoriteSubAreaBonus", 0),
         }
 
-    # ─── Export JSON ─────────────────────────────────────────────────────
+    # ─── Export JSON
     monsters_list = sorted(monsters_named.values(), key=lambda x: x["id"])
     races_list    = sorted(races_named.values(),    key=lambda x: x["id"])
 
@@ -215,7 +241,7 @@ def main():
     print(f"\n✅ {len(monsters_list):,} monstres  → {out_monsters}")
     print(f"✅ {len(races_list):,} races      → {out_races}")
 
-    # ─── Export CSV ─────────────────────────────────────────────────────
+    # ─── Export CSV
     if args.csv:
         out_csv = os.path.join(args.output, "monsters_named.csv")
         fields = ["id", "name", "raceName", "superRaceName", "levelMin", "levelMax",
@@ -227,23 +253,23 @@ def main():
             w.writerows(monsters_list)
         print(f"✅ CSV             → {out_csv}")
 
-    # ─── Mode recherche ─────────────────────────────────────────────────────
+    # ─── Mode recherche
     if args.search:
         query = args.search.lower()
         results = [m for m in monsters_list if query in m["name"].lower()]
         print(f"\n🔍 '{args.search}' → {len(results)} résultats")
         for m in results[:30]:
             flags = []
-            if m["isBoss"]:      flags.append("BOSS")
-            if m["isMiniBoss"]: flags.append("mini-boss")
-            if m["isQuestMonster"]: flags.append("quête")
+            if m["isBoss"]:           flags.append("BOSS")
+            if m["isMiniBoss"]:       flags.append("mini-boss")
+            if m["isQuestMonster"]:   flags.append("quête")
             lvl = f"Nv{m['levelMin']}-{m['levelMax']}" if m['levelMin'] != m['levelMax'] else f"Nv{m['levelMin']}"
             tag = f" [{', '.join(flags)}]" if flags else ""
             print(f"  [{m['id']:>5}] {lvl:<12} {m['name']:<35} {m['raceName']}{tag}")
         if len(results) > 30:
             print(f"  … et {len(results)-30} autres")
 
-    # ─── Mode détail monstre ──────────────────────────────────────────────────
+    # ─── Mode détail monstre
     if args.monster_id:
         m = monsters_named.get(args.monster_id)
         if not m:
@@ -252,9 +278,9 @@ def main():
             print(f"\n👾 Monstre #{m['id']} — {m['name']}")
             print(f"   Race       : {m['raceName']} (super-race: {m['superRaceName']})")
             flags = []
-            if m["isBoss"]:         flags.append("Boss")
-            if m["isMiniBoss"]:    flags.append("Mini-boss")
-            if m["isQuestMonster"]:flags.append("Quête")
+            if m["isBoss"]:          flags.append("Boss")
+            if m["isMiniBoss"]:      flags.append("Mini-boss")
+            if m["isQuestMonster"]:  flags.append("Quête")
             if flags:
                 print(f"   Tags       : {', '.join(flags)}")
             print(f"   Grades     : {len(m['grades'])}")
@@ -264,7 +290,7 @@ def main():
                       f"PA:{g['actionPoints']}  PM:{g['movementPoints']}  "
                       f"xp:{g['xpRatio']}%  {kamas}")
 
-    # ─── Filtre par race ────────────────────────────────────────────────────
+    # ─── Filtre par race
     if args.race_id:
         race = races_named.get(args.race_id)
         filtered = [m for m in monsters_list if m["raceId"] == args.race_id]
@@ -275,7 +301,7 @@ def main():
             boss = " [BOSS]" if m["isBoss"] else ""
             print(f"  [{m['id']:>5}] {lvl:<12} {m['name']}{boss}")
 
-    # ─── Aperçu ────────────────────────────────────────────────────────────
+    # ─── Aperçu
     print("\n--- Aperçu monstres (10 premiers) ---")
     for m in monsters_list[:10]:
         lvl = f"Nv{m['levelMin']}-{m['levelMax']}" if m['levelMin'] != m['levelMax'] else f"Nv{m['levelMin']}"
