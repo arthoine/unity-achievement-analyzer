@@ -20,22 +20,19 @@ except ImportError:
     print("[ERREUR] UnityPy n'est pas installé. Lance: pip install unitypy", file=sys.stderr)
     sys.exit(1)
 
+# Version Unity de Dofus (détectée depuis globalgamemanagers)
+UnityPy.config.FALLBACK_UNITY_VERSION = "6000.1.17f1"
 
 DEFAULT_BUNDLE = "data_assets_achievementcategoriesdataroot.asset.bundle"
 
 
 def parse_bundle(bundle_path: str) -> dict | None:
-    """
-    Ouvre un Asset Bundle Unity et extrait le MonoBehaviour AchievementCategoriesDataRoot.
-    Retourne un dict avec les champs bruts, ou None si non trouvé.
-    """
     env = UnityPy.load(bundle_path)
 
     for obj in env.objects:
         if obj.type.name == "MonoBehaviour":
             data = obj.read()
             tree = data.type_tree if hasattr(data, 'type_tree') else vars(data)
-
             name = getattr(data, 'm_Name', '') or tree.get('m_Name', '')
             if 'AchievementCategoriesDataRoot' in str(name):
                 return {
@@ -50,9 +47,6 @@ def parse_bundle(bundle_path: str) -> dict | None:
 
 
 def extract_categories(raw_data: dict) -> list[dict]:
-    """
-    Extrait la liste des AchievementCategoryData depuis la structure brute du MonoBehaviour.
-    """
     categories = []
 
     try:
@@ -82,9 +76,6 @@ def extract_categories(raw_data: dict) -> list[dict]:
 
 
 def build_tree(categories: list[dict]) -> list[dict]:
-    """
-    Construit un arbre hiérarchique parent → enfants.
-    """
     by_id = {cat['id']: dict(cat, children=[]) for cat in categories}
     roots = []
 
@@ -108,7 +99,6 @@ def build_tree(categories: list[dict]) -> list[dict]:
 
 
 def print_tree(nodes: list[dict], indent: int = 0) -> None:
-    """Affiche l'arbre de catégories dans le terminal."""
     prefix = '  ' * indent
     for node in nodes:
         nb_achievements = len(node['achievementIds'])
@@ -153,6 +143,11 @@ def main():
         help=f'Chemin vers le .bundle (défaut: {DEFAULT_BUNDLE})'
     )
     parser.add_argument(
+        '--unity-version', '-u',
+        default=None,
+        help='Forcer une version Unity (défaut: 6000.1.17f1)'
+    )
+    parser.add_argument(
         '--json', '-j',
         metavar='OUTPUT_JSON',
         help='Exporter les catégories en JSON'
@@ -174,12 +169,17 @@ def main():
     )
     args = parser.parse_args()
 
+    if args.unity_version:
+        UnityPy.config.FALLBACK_UNITY_VERSION = args.unity_version
+
     bundle_path = Path(args.bundle)
     if not bundle_path.exists():
         print(f"[ERREUR] Bundle introuvable : {bundle_path}", file=sys.stderr)
         sys.exit(1)
 
     print(f"[...] Chargement du bundle : {bundle_path}")
+    print(f"[...] Unity version : {UnityPy.config.FALLBACK_UNITY_VERSION}")
+
     raw = parse_bundle(str(bundle_path))
 
     if raw is None:
