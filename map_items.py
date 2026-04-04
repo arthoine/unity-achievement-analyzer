@@ -6,21 +6,23 @@ Croise les bundles extraits (items, itemsets, itemtypes, itemsupertypes)
 avec fr_texts.json pour produire des JSONs et CSVs lisibles.
 
 Prérequis :
-    1. python analyze_bundle.py --bundle-dir data/ --output output/
-    2. python parse_fr.py --output fr_texts.json
+    1. python parse_fr.py --output fr_texts.json
 
 Usage :
     python map_items.py
     python map_items.py --texts fr_texts.json --output output/
     python map_items.py --texts fr_texts.json --output output/ --csv
     python map_items.py --texts fr_texts.json --output output/ --search "Bouftou"
-    python map_items.py --texts fr_texts.json --output output/ --item-id 12345
 
 Sorties :
-    output/items_named.json        — 20 430 items avec nom/description FR
-    output/itemtypes_named.json    — 232 types avec nom FR
-    output/itemsets_named.json     — 892 panoplies avec nom FR + items nommés
+    output/items_named.json        — items avec nom/description FR
+    output/itemtypes_named.json    — types avec nom FR
+    output/itemsets_named.json     — panoplies avec nom FR + items nommés
     output/items_named.csv         — (avec --csv) CSV plat exploitable
+
+Source de données (par ordre de priorité) :
+    1. Fichiers JSON individuels dans output/ (si générés par analyze_bundle.py)
+    2. assets_final.json (fallback automatique — extrait via references.RefIds)
 """
 
 import json
@@ -32,7 +34,7 @@ import csv
 # ─── Chemins par défaut ───────────────────────────────────────────────────────
 DEFAULT_TEXTS  = "fr_texts.json"
 DEFAULT_OUTPUT = "output"
-ASSETS_FINAL   = "output/assets_final.json"
+ASSETS_FINAL   = "assets_final.json"
 
 # ─── Positions d'équipement (slot id → label) ────────────────────────────────
 SLOT_NAMES = {
@@ -90,10 +92,24 @@ def load_bundle_json(path: str) -> list:
 
 def find_bundle(output_dir: str, keyword: str) -> str:
     """Cherche un fichier JSON de bundle dans output/ par mot-clé."""
+    if not os.path.isdir(output_dir):
+        return ""
     for fname in os.listdir(output_dir):
         if keyword in fname and fname.endswith(".json"):
             return os.path.join(output_dir, fname)
     return ""
+
+
+def load_assets_final(path: str) -> list:
+    """Charge assets_final.json une seule fois et le met en cache."""
+    if not hasattr(load_assets_final, "_cache"):
+        if not os.path.exists(path):
+            return []
+        print(f"   📂 Lecture assets_final.json ({path})…")
+        with open(path, encoding="utf-8") as f:
+            load_assets_final._cache = json.load(f)
+        print(f"   → {len(load_assets_final._cache):,} objets chargés")
+    return load_assets_final._cache
 
 
 def main():
@@ -102,7 +118,7 @@ def main():
     )
     parser.add_argument("--texts",   default=DEFAULT_TEXTS,  help="Chemin vers fr_texts.json")
     parser.add_argument("--output",  default=DEFAULT_OUTPUT, help="Dossier de sortie")
-    parser.add_argument("--assets",  default=ASSETS_FINAL,   help="assets_final.json (optionnel, sinon bundles individuels)")
+    parser.add_argument("--assets",  default=ASSETS_FINAL,   help="assets_final.json (fallback si pas de bundles individuels)")
     parser.add_argument("--csv",     action="store_true",    help="Exporter aussi en CSV")
     parser.add_argument("--search",  default=None,           help="Rechercher des items par nom FR (ex: --search Bouftou)")
     parser.add_argument("--item-id", default=None, type=int, help="Afficher les détails d'un item par son ID")
@@ -119,25 +135,58 @@ def main():
     print(f"   → {len(texts):,} textes (IDs {min(texts)} → {max(texts)})")
 
     # ─── Chargement des bundles ──────────────────────────────────────────────
-    # Priorité : cherche les fichiers individuels dans output/, sinon assets_final
+    # Priorité 1 : fichiers individuels dans output/
+    # Priorité 2 : assets_final.json (extrait via references.RefIds du MonoBehaviour)
     def load_data(keyword):
+        # Priorité 1 — bundle individuel
         path = find_bundle(args.output, keyword)
         if path:
-            return refs_to_dict(extract_refs(load_bundle_json(path)))
-        # Fallback : extraire depuis assets_final.json
-        if os.path.exists(args.assets):
-            with open(args.assets, encoding="utf-8") as f:
-                all_objs = json.load(f)
-            result = {}
-            for obj in all_objs:
-                if keyword in obj.get("bundle", "") and isinstance(obj.get("data"), dict):
-                    d = obj["data"]
-                    if "id" in d:
-                        result[d["id"]] = d
-            return result
+            data = refs_to_dict(extract_refs(load_bundle_json(path)))
+            if data:
+                return data
+
+        # Priorité 2 — assets_final.json
+        all_objs = load_assets_final(args.assets)
+        if not all_objs:
+            return {}
+
+        # Trouver le MonoBehaviour du DataRoot correspondant au keyword
+        for obj in all_objs:
+            if keyword not in obj.get("bundle", ""):
+                continue
+            if obj.get("type") != "MonoBehaviour":
+                continue
+            d = obj.get("data", {})
+            if not isinstance(d, dict):
+                continue
+            # Résolution via references.RefIds (structure Unity sérialisée)
+            refs = d.get("references", {}).get("RefIds", [])
+            if refs:
+                result = refs_to_dict(refs)
+                if result:
+                    return result
+            # Résolution via objectsById (certains bundles utilisent cette clé)
+            obj_by_id = d.get("objectsById", {})
+            keys   = obj_by_id.get("m_keys", [])
+            values = obj_by_id.get("m_values", [])
+            if keys and values:
+                # m_values contient des {rid: X} → on résout les rids dans les RefIds globaux
+                rid_map = {}
+                global_refs = d.get("references", {}).get("RefIds", [])
+                for ref in global_refs:
+                    rid_map[ref.get("rid")] = ref.get("data", {})
+                result = {}
+                for kid, val in zip(keys, values):
+                    rid = val.get("rid")
+                    if rid and rid in rid_map:
+                        item_data = rid_map[rid]
+                        if isinstance(item_data, dict):
+                            result[kid] = item_data
+                if result:
+                    return result
         return {}
 
-    print("📦 Chargement bundles...")
+    print("📦 Chargement bundles…")
     items_raw      = load_data("itemsdataroot")
     itemtypes_raw  = load_data("itemtypesdataroot")
     supertype_raw  = load_data("itemsupertypesdataroot")
@@ -147,6 +196,12 @@ def main():
     print(f"   ItemTypes   : {len(itemtypes_raw):,}")
     print(f"   SuperTypes  : {len(supertype_raw):,}")
     print(f"   ItemSets    : {len(itemsets_raw):,}")
+
+    if not items_raw:
+        print("\n⚠️  Aucun item trouvé. Vérifie :")
+        print("   • Que assets_final.json est dans le dossier courant (ou --assets chemin)")
+        print("   • Ou que les bundles individuels sont dans output/")
+        sys.exit(1)
 
     # ─── Résolution ItemTypes ────────────────────────────────────────────────
     itemtypes_named = {}
