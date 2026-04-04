@@ -8,8 +8,9 @@ import glob
 import os
 import sys
 
-DATA_DIR = r"J:\dofus\bot\unity-achievement-analyzer\data"
-OUTPUT = "items.csv"
+# Les JSON sont dans le même dossier que le script
+DATA_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT = os.path.join(DATA_DIR, "items.csv")
 
 # Langue cible pour les noms (adapter si besoin)
 LANG = "fr"
@@ -51,7 +52,6 @@ def load_i18n(files):
             print(f"  Erreur: {e}")
             continue
 
-        # Pattern: id <N> text <val> dans les blocs de données
         id_text = re.compile(
             r'\bid\s+(\d+)\b[^\n]*\n(?:.*?\n)*?.*?\btext\s+"([^"\\]*(?:\\.[^"\\]*)*)"',
             re.DOTALL
@@ -64,7 +64,6 @@ def load_i18n(files):
                 texts[nid] = text
                 count += 1
 
-        # Fallback: pattern key: "value"
         if count == 0:
             for m in kv_pattern.finditer(content):
                 nid = int(m.group(1))
@@ -79,7 +78,6 @@ def extract_items(files):
     """Extrait les items: (id, nameId, typeId) depuis les bundles ItemsDataRoot."""
     items = {}
 
-    # Pattern: id <N>, nameId <N>, typeId <N> sur la même ligne
     block_pattern = re.compile(
         r'id\s+(\d+),\s*nameId\s+(\d+),\s*typeId\s+(\d+)'
     )
@@ -98,7 +96,6 @@ def extract_items(files):
                 items[item_id] = {"name_id": name_id, "type_id": type_id}
                 count += 1
 
-        # Fallback: id + nameId sans typeId
         if count == 0:
             alt_pattern = re.compile(r'id\s+(\d+)\s*,\s*nameId\s+(\d+)')
             for m in alt_pattern.finditer(content):
@@ -113,6 +110,8 @@ def extract_items(files):
     return items
 
 def main():
+    print(f"Dossier de recherche: {DATA_DIR}")
+
     item_files = find_item_bundles(DATA_DIR)
     if not item_files:
         print(f"[ERREUR] Aucun fichier items trouvé dans: {DATA_DIR}")
@@ -142,7 +141,6 @@ def main():
 
     print(f"Sauvegardé: {OUTPUT}")
 
-    # Stats
     named = sum(1 for item_id in items if texts.get(items[item_id]["name_id"]))
     print(f"Items avec nom: {named}/{len(items)}")
 
