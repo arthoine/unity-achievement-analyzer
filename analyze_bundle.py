@@ -4,6 +4,9 @@ import os
 import argparse
 import glob
 
+# Version Unity de Dofus 3 (détectée depuis globalgamemanagers)
+UnityPy.config.FALLBACK_UNITY_VERSION = "6000.1.17f1"
+
 parser = argparse.ArgumentParser(
     description="Extrait les assets Unity depuis des fichiers .bundle"
 )
@@ -32,7 +35,18 @@ parser.add_argument(
     action="store_true",
     help="Extraire aussi les Texture2D / Sprites en PNG"
 )
+parser.add_argument(
+    "--unity-version",
+    default=None,
+    help="Forcer une version Unity spécifique (ex: 6000.1.17f1)"
+)
 args = parser.parse_args()
+
+# Override version si passée en argument
+if args.unity_version:
+    UnityPy.config.FALLBACK_UNITY_VERSION = args.unity_version
+
+print(f"🎮 Unity version : {UnityPy.config.FALLBACK_UNITY_VERSION}")
 
 os.makedirs(args.output, exist_ok=True)
 
@@ -59,7 +73,11 @@ all_objects = []
 
 for bundle_path in bundle_files:
     print(f"\n🔍 Lecture de {os.path.basename(bundle_path)}...")
-    env = UnityPy.load(bundle_path)
+    try:
+        env = UnityPy.load(bundle_path)
+    except Exception as e:
+        print(f"❌ Impossible de lire {os.path.basename(bundle_path)}: {e}")
+        continue
 
     for obj in env.objects:
         try:
@@ -81,10 +99,13 @@ for bundle_path in bundle_files:
             if args.extract_images and obj.type.name in ["Texture2D", "Sprite"]:
                 img_dir = os.path.join(args.output, "images")
                 os.makedirs(img_dir, exist_ok=True)
-                img = data.image
-                img_path = os.path.join(img_dir, f"{data.name}.png")
-                img.save(img_path)
-                obj_info["image_saved"] = img_path
+                try:
+                    img = data.image
+                    img_path = os.path.join(img_dir, f"{data.name}.png")
+                    img.save(img_path)
+                    obj_info["image_saved"] = img_path
+                except Exception as ie:
+                    print(f"  ⚠️  Impossible d'extraire l'image {data.name}: {ie}")
 
             all_objects.append(obj_info)
         except Exception as e:
