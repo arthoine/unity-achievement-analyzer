@@ -13,7 +13,7 @@ Usage :
     python map_monsters.py --texts fr_texts.json --assets output/assets_final.json
     python map_monsters.py --texts fr_texts.json --assets output/assets_final.json --csv
     python map_monsters.py --texts fr_texts.json --assets output/assets_final.json --search "Bouftou"
-    python map_monsters.py --texts fr_texts.json --assets output/assets_final.json --monster-id 25
+    python map_monsters.py --texts fr_texts.json --assets output/assets_final.json --monster-id 31
     python map_monsters.py --texts fr_texts.json --assets output/assets_final.json --debug-raw 31
     python map_monsters.py --texts fr_texts.json --assets output/assets_final.json --race-id 5
 
@@ -116,6 +116,50 @@ def debug_raw(monster_id: int, assets_path: str):
     print(f"❌ Monstre {monster_id} introuvable dans monstersdataroot")
 
 
+def parse_grades(raw_grades: list) -> list:
+    """Extrait les stats de chaque grade depuis les données brutes Unity."""
+    grades = []
+    for g in raw_grades:
+        grades.append({
+            "grade":            g.get("grade", 0),
+            "level":            g.get("level", 0),
+            "lifePoints":       g.get("lifePoints", 0),
+            "actionPoints":     g.get("actionPoints", 0),
+            "movementPoints":   g.get("movementPoints", 0),
+            "gradeXp":          g.get("gradeXp", 0),          # XP absolu donné au joueur
+            "strength":         g.get("strength", 0),
+            "intelligence":     g.get("intelligence", 0),
+            "chance":           g.get("chance", 0),
+            "agility":          g.get("agility", 0),
+            "wisdom":           g.get("wisdom", 0),
+            "earthResistance":  g.get("earthResistance", 0),
+            "fireResistance":   g.get("fireResistance", 0),
+            "waterResistance":  g.get("waterResistance", 0),
+            "airResistance":    g.get("airResistance", 0),
+            "neutralResistance":g.get("neutralResistance", 0),
+            "paDodge":          g.get("paDodge", 0),
+            "pmDodge":          g.get("pmDodge", 0),
+            "damageReflect":    g.get("damageReflect", 0),
+            "minDroppedKamas":  g.get("minDroppedKamas", 0),
+            "maxDroppedKamas":  g.get("maxDroppedKamas", 0),
+        })
+    return grades
+
+
+def parse_drops(raw_drops: list) -> list:
+    """Extrait la table de drops depuis les données brutes Unity."""
+    drops = []
+    for d in raw_drops:
+        drops.append({
+            "objectId":   d.get("objectId", 0),
+            "dropPct":    round(d.get("percentDropForGrade1", 0.0), 4),  # % grade 1 comme référence
+            "count":      d.get("count", 0),
+            "criterions": d.get("criterions", ""),
+            "disableDropModificator": bool(d.get("disableDropModificator", 0)),
+        })
+    return drops
+
+
 def main():
     parser = argparse.ArgumentParser(description="Mappe les monstres Dofus 3 avec leurs noms FR")
     parser.add_argument("--texts",      default=DEFAULT_TEXTS)
@@ -130,10 +174,7 @@ def main():
 
     os.makedirs(args.output, exist_ok=True)
 
-    # Mode debug-raw : pas besoin de charger les textes ni de builder tout
     if args.debug_raw:
-        print(f"📖 Textes FR : {args.texts}")
-        load_texts(args.texts)  # juste pour valider le fichier
         print("📦 Chargement assets…")
         load_assets_final(args.assets)
         debug_raw(args.debug_raw, args.assets)
@@ -144,10 +185,10 @@ def main():
     print(f"   → {len(texts):,} textes (IDs {min(texts)} → {max(texts)})")
 
     print("📦 Chargement bundles…")
-    monsters_raw    = load_data("monstersdataroot",          args.assets)
-    races_raw       = load_data("monsterracesdataroot",      args.assets)
-    superraces_raw  = load_data("monstersuperracesdataroot", args.assets)
-    minibosses_raw  = load_data("monsterminibossesdataroot", args.assets)
+    monsters_raw   = load_data("monstersdataroot",          args.assets)
+    races_raw      = load_data("monsterracesdataroot",      args.assets)
+    superraces_raw = load_data("monstersuperracesdataroot", args.assets)
+    minibosses_raw = load_data("monsterminibossesdataroot", args.assets)
 
     print(f"   Monstres    : {len(monsters_raw):,}")
     print(f"   Races       : {len(races_raw):,}")
@@ -161,10 +202,7 @@ def main():
     # ─── Super-races
     superraces_named = {}
     for sid, d in superraces_raw.items():
-        superraces_named[sid] = {
-            "id": sid,
-            "name": t(texts, d.get("nameId")),
-        }
+        superraces_named[sid] = {"id": sid, "name": t(texts, d.get("nameId"))}
 
     # ─── Races
     races_named = {}
@@ -177,51 +215,50 @@ def main():
             "superRaceName": sr.get("name", ""),
         }
 
-    # ─── Mini-boss index
-    miniboss_ids = set()
+    # ─── Mini-boss index (monsterId → miniBossId)
+    # MonsterMiniBossData contient le champ monsterId qui pointe vers le monstre normal
+    monster_to_miniboss = {}
     for mb in minibosses_raw.values():
-        mid = mb.get("monsterId") or mb.get("id")
-        if mid:
-            miniboss_ids.add(mid)
+        normal_id = mb.get("monsterId")
+        if normal_id:
+            monster_to_miniboss[normal_id] = mb.get("id", 0)
 
     # ─── Monstres
     monsters_named = {}
     for mid, d in monsters_raw.items():
-        race = races_named.get(d.get("raceId", 0), {})
+        # "race" (pas "raceId") est le vrai champ Unity
+        race = races_named.get(d.get("race", 0), {})
 
-        grades = []
-        for g in d.get("grades", []):
-            grades.append({
-                "level": g.get("level", 0),
-                "lifePoints": g.get("lifePoints", 0),
-                "actionPoints": g.get("actionPoints", 0),
-                "movementPoints": g.get("movementPoints", 0),
-                "xpRatio": g.get("xpRatio", 0),
-                "minDroppedKamas": g.get("minDroppedKamas", 0),
-                "maxDroppedKamas": g.get("maxDroppedKamas", 0),
-            })
+        grades = parse_grades(d.get("grades", []))
+        drops  = parse_drops(d.get("drops", []))
 
         levels = [g["level"] for g in grades if g["level"] > 0]
         level_min = min(levels) if levels else 0
         level_max = max(levels) if levels else 0
 
+        # correspondingMiniBossId : l'ID du mini-boss lié à ce monstre normal
+        mini_boss_id = d.get("correspondingMiniBossId", 0)
+
         monsters_named[mid] = {
             "id": mid,
             "name": t(texts, d.get("nameId")),
-            "raceId": d.get("raceId", 0),
+            "raceId": d.get("race", 0),
             "raceName": race.get("name", ""),
             "superRaceId": race.get("superRaceId", 0),
             "superRaceName": race.get("superRaceName", ""),
             "isBoss": bool(d.get("isBoss", 0)),
-            "isMiniBoss": mid in miniboss_ids,
+            "isMiniBoss": mid in monster_to_miniboss,
+            "correspondingMiniBossId": mini_boss_id,
             "isQuestMonster": bool(d.get("isQuestMonster", 0)),
             "canTackle": bool(d.get("canTackle", 0)),
             "levelMin": level_min,
             "levelMax": level_max,
+            "subareas": d.get("subareas", []),          # liste des sous-zones
+            "spells": d.get("spells", []),              # IDs de sorts
             "grades": grades,
-            "dropMonsterIds": d.get("dropMonsterIds", []),
-            "favoriteSubareaId": d.get("favoriteSubareaId", 0),
-            "favoriteSubAreaBonus": d.get("favoriteSubAreaBonus", 0),
+            "drops": drops,
+            "speedAdjust": d.get("speedAdjust", 0),
+            "aggressiveZoneSize": d.get("aggressiveZoneSize", 0),
         }
 
     # ─── Export JSON
@@ -234,19 +271,18 @@ def main():
 
     out_monsters = os.path.join(args.output, "monsters_named.json")
     out_races    = os.path.join(args.output, "monsterraces_named.json")
-
     write_json(monsters_list, out_monsters)
     write_json(races_list,    out_races)
 
     print(f"\n✅ {len(monsters_list):,} monstres  → {out_monsters}")
     print(f"✅ {len(races_list):,} races      → {out_races}")
 
-    # ─── Export CSV
+    # ─── Export CSV (une ligne par monstre, sans grades/drops)
     if args.csv:
         out_csv = os.path.join(args.output, "monsters_named.csv")
         fields = ["id", "name", "raceName", "superRaceName", "levelMin", "levelMax",
-                  "isBoss", "isMiniBoss", "isQuestMonster", "canTackle",
-                  "favoriteSubareaId", "favoriteSubAreaBonus"]
+                  "isBoss", "isMiniBoss", "correspondingMiniBossId", "isQuestMonster",
+                  "canTackle", "aggressiveZoneSize", "speedAdjust"]
         with open(out_csv, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
             w.writeheader()
@@ -260,9 +296,9 @@ def main():
         print(f"\n🔍 '{args.search}' → {len(results)} résultats")
         for m in results[:30]:
             flags = []
-            if m["isBoss"]:           flags.append("BOSS")
-            if m["isMiniBoss"]:       flags.append("mini-boss")
-            if m["isQuestMonster"]:   flags.append("quête")
+            if m["isBoss"]:         flags.append("BOSS")
+            if m["isMiniBoss"]:     flags.append("mini-boss")
+            if m["isQuestMonster"]: flags.append("quête")
             lvl = f"Nv{m['levelMin']}-{m['levelMax']}" if m['levelMin'] != m['levelMax'] else f"Nv{m['levelMin']}"
             tag = f" [{', '.join(flags)}]" if flags else ""
             print(f"  [{m['id']:>5}] {lvl:<12} {m['name']:<35} {m['raceName']}{tag}")
@@ -276,19 +312,29 @@ def main():
             print(f"\n❌ Monstre {args.monster_id} introuvable")
         else:
             print(f"\n👾 Monstre #{m['id']} — {m['name']}")
-            print(f"   Race       : {m['raceName']} (super-race: {m['superRaceName']})")
+            print(f"   Race         : {m['raceName']} (super-race: {m['superRaceName']})")
             flags = []
-            if m["isBoss"]:          flags.append("Boss")
-            if m["isMiniBoss"]:      flags.append("Mini-boss")
-            if m["isQuestMonster"]:  flags.append("Quête")
+            if m["isBoss"]:         flags.append("Boss")
+            if m["isMiniBoss"]:     flags.append("Mini-boss")
+            if m["isQuestMonster"]: flags.append("Quête")
             if flags:
-                print(f"   Tags       : {', '.join(flags)}")
-            print(f"   Grades     : {len(m['grades'])}")
-            for i, g in enumerate(m["grades"], 1):
-                kamas = f"{g['minDroppedKamas']}-{g['maxDroppedKamas']} kamas" if g['maxDroppedKamas'] else ""
-                print(f"     Grade {i}: Nv{g['level']:>3}  PV:{g['lifePoints']:>5}  "
-                      f"PA:{g['actionPoints']}  PM:{g['movementPoints']}  "
-                      f"xp:{g['xpRatio']}%  {kamas}")
+                print(f"   Tags         : {', '.join(flags)}")
+            if m["correspondingMiniBossId"]:
+                print(f"   Mini-boss ID : {m['correspondingMiniBossId']}")
+            print(f"   Zones        : {m['subareas']}")
+            print(f"   Sorts        : {m['spells']}")
+            print(f"   Grades       : {len(m['grades'])}")
+            for g in m["grades"]:
+                kamas = f"  kamas:{g['minDroppedKamas']}-{g['maxDroppedKamas']}" if g['maxDroppedKamas'] else ""
+                print(f"     Grade {g['grade']}: Nv{g['level']:>3}  "
+                      f"PV:{g['lifePoints']:>5}  PA:{g['actionPoints']}  PM:{g['movementPoints']}  "
+                      f"XP:{g['gradeXp']:>6}  "
+                      f"Res terre/feu/eau/air/neu: {g['earthResistance']:>4}/{g['fireResistance']:>4}/{g['waterResistance']:>4}/{g['airResistance']:>4}/{g['neutralResistance']:>4}"
+                      f"{kamas}")
+            print(f"\n   Drops ({len(m['drops'])}) :")
+            for drop in m["drops"]:
+                crit = f"  [{drop['criterions']}]" if drop["criterions"] else ""
+                print(f"     item:{drop['objectId']:<7} {drop['dropPct']:>6.2f}%  x{drop['count']}{crit}")
 
     # ─── Filtre par race
     if args.race_id:
