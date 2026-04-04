@@ -1,44 +1,96 @@
-# 🎮 Unity Achievement Categories Analyzer
+# unity-achievement-analyzer
 
-Analyse d'Asset Bundle Unity contenant les **catégories d'achievements** d'un jeu (extrait d'APK/build Unity).
+Extraction et analyse des achievements Dofus 3 depuis les Unity Asset Bundles.
 
-## 📁 Fichiers fournis
-- `data/data_assets_achievementcategoriesdataroot.asset.bundle` (5 Ko) : Asset Bundle des catégories d'achievements
-- `data/catalog_1.0-2.bin` (97 Ko) : Catalogue binaire Unity
-- `data/catalog_1.0-3.hash` (32 bytes) : Hash de vérification
+## Repos liés
 
-## 🚀 Installation
+- [`dofus-data-extractor`](https://github.com/arthoine/dofus-data-extractor) — Parse le fichier `fr.bin` (332 038 textes FR)
+- [`dofus-map-extractor`](https://github.com/arthoine/dofus-map-extractor) — Extraction des données de maps
+
+## Pipeline complet
+
+```
+dofus-data-extractor/
+  parse_fr.py  →  fr_texts.json (332k textes FR)
+
+unity-achievement-analyzer/
+  analyze_bundle.py  →  output/assets_final.json (données brutes des bundles)
+  resolve_names.py   →  achievements_fr.json     (arbre résolu en français)
+```
+
+## Installation
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## 🔍 Utilisation
+## Usage
 
-### 1. Extraire le contenu de l'Asset Bundle
+### Étape 1 — Générer fr_texts.json
+
 ```bash
-python analyze_bundle.py
+# Dans le repo dofus-data-extractor
+python parse_fr.py
+# → génère fr_texts.json
 ```
 
-Le script génère un fichier `output/achievements.json` avec tous les objets extraits.
+### Étape 2 — Extraire les bundles
 
-### 2. Analyser avec Ollama
 ```bash
-ollama run llama3.2 "Analyse ces données d'achievements Unity : $(cat output/achievements.json | head -c 2000)"
+# Copier les bundles achievement dans data/
+cp .../Content/Data/data_assets_achievement*.bundle data/
+
+python analyze_bundle.py --bundle-dir data/ --output output/
+# → génère output/assets_final.json
 ```
 
-## 📊 Script d'analyse
+### Étape 3 — Résoudre les noms FR
 
-Le script `analyze_bundle.py` :
-- Charge l'Asset Bundle Unity
-- Extrait tous les objets (ScriptableObjects, textures, etc.)
-- Sauvegarde le résultat en JSON lisible par un LLM
+```bash
+python resolve_names.py \
+  --texts  ../dofus-data-extractor/fr_texts.json \
+  --assets output/assets_final.json \
+  --output achievements_fr.json
+```
 
-## 🛠 Dépendances
-- [UnityPy](https://github.com/K0lb3/UnityPy) — Lecture des Asset Bundles Unity en Python
+### Options resolve_names.py
 
-## 🔗 Contexte
-Fichiers extraits d'un jeu Unity. L'Asset Bundle contient des ScriptableObjects définissant les catégories de succès.
+| Option | Défaut | Description |
+|--------|--------|-------------|
+| `--texts` | `../dofus-data-extractor/fr_texts.json` | Chemin vers fr_texts.json |
+| `--assets` | `output/assets_final.json` | Chemin vers assets_final.json |
+| `--output` | `achievements_fr.json` | Fichier de sortie |
+| `--flat` | false | Sortie plate au lieu de l'arbre catégories→achievements |
 
----
-*Antoine · Lyon · 2026*
+## Sortie (arbre)
+
+```json
+[
+  {
+    "id": 1,
+    "name": "Donjons",
+    "order": 0,
+    "achievements": [
+      {
+        "id": 74,
+        "name": "Larve Royale",
+        "description": "Terminer le donjon Larve Royale.",
+        "points": 10,
+        "objectives": [
+          { "id": 101, "name": "Vaincre la Larve Royale", "order": 0 }
+        ],
+        "rewards": []
+      }
+    ]
+  }
+]
+```
+
+## Structure des fichiers sources
+
+| Bundle | Contenu |
+|--------|---------|
+| `data_assets_achievementcategoriesdataroot.asset.bundle` | Catégories |
+| `data_assets_achievementsdataroot.asset.bundle` | Achievements |
+| `data_assets_achievementobjectivesdataroot.asset.bundle` | Objectifs |
+| `data_assets_achievementrewardsdataroot.asset.bundle` | Récompenses |
