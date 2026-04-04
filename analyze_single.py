@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 """
-analyze_single.py — Analyse DÉTAILLÉE d'un bundle Unity (mode debug)
+analyze_single.py — Debug d'un bundle Unity qui crash (0xC0000005)
 ==================================================================
-Utilisé pour débugger les bundles qui crashent (ex: itemsdataroot, itemsetsdataroot)
-- Logging ultra-détaillé
-- Timeout par objet (évite les blocages)
-- Sauvegarde partielle même si crash
-- Stats mémoire
-- Skip des objets problématiques
+Stratégie : chaque objet est lu dans un subprocess isolé.
+Si le subprocess crash (SIGSEGV / 0xC0000005), on continue quand même.
 
 Usage:
-    python analyze_single.py data_assets_itemsdataroot.asset.bundle
-    python analyze_single.py data_assets_itemsetsdataroot.asset.bundle
+    python analyze_single.py data\\data_assets_itemsdataroot.asset.bundle
+    python analyze_single.py data\\data_assets_itemsetsdataroot.asset.bundle
+    python analyze_single.py data\\data_assets_itemsdataroot.asset.bundle --path-id 2
 """
 
 import warnings
@@ -20,142 +17,165 @@ warnings.filterwarnings("ignore")
 import UnityPy
 import json
 import sys
-import traceback
-import gc
+import subprocess
+import tempfile
 import os
-from pathlib import Path
-import psutil
 import argparse
+from pathlib import Path
 
-# Version Unity Dofus
-UnityPy.config.FALLBACK_UNITY_VERSION = "6000.1.17f1"
-TIMEOUT_PER_OBJ = 10  # secondes max par objet
+UNITY_VERSION = "6000.1.17f1"
 
-def memory_usage():
-    """Mémoire utilisée en MB"""
-    process = psutil.Process(os.getpid())
-    return process.memory_info().rss / 1024 / 1024
+# ─── Worker (lancé dans un subprocess séparé) ──────────────────────────────
+WORKER_SCRIPT = """
+import warnings
+warnings.filterwarnings("ignore")
+import UnityPy, json, sys, traceback
 
-def safe_read_obj(obj, obj_index, total_objs):
-    """Lit un objet avec timeout et gestion d'erreur"""
-    print(f"  [{obj_index+1}/{total_objs}] {obj.path_id} | {obj.type.name:<20} | {getattr(obj.read(), 'name', 'Unnamed')}")
+UnityPy.config.FALLBACK_UNITY_VERSION = "{version}"
 
-    obj_info = {
-        "path_id": obj.path_id,
-        "type": str(obj.type.name),
-        "size": sys.getsizeof(obj.read()),
-        "memory_before": memory_usage(),
-    }
+bundle_path = sys.argv[1]
+path_id     = int(sys.argv[2])
+out_file    = sys.argv[3]
+
+env = UnityPy.load(bundle_path)
+result = {{"path_id": path_id, "success": False}}
+
+for obj in env.objects:
+    if obj.path_id != path_id:
+        continue
+    result["type"] = str(obj.type.name)
+    try:
+        data = obj.read()
+        result["name"] = getattr(data, "name", "Unnamed")
+        result["text"] = getattr(data, "text", None)
+        tree = obj.read_typetree()
+        result["data"] = tree
+        result["success"] = True
+    except Exception as e:
+        result["error"]  = str(e)
+        result["trace"]  = traceback.format_exc()
+    break
+
+with open(out_file, "w", encoding="utf-8") as f:
+    json.dump(result, f, default=str)
+"""
+
+
+def read_obj_subprocess(bundle_path: str, path_id: int, timeout: int = 30) -> dict:
+    """Lance un subprocess isolé pour lire un seul objet. Survive aux crash natifs."""
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as tmp:
+        tmp_path = tmp.name
+
+    # Écrit le worker dans un fichier temp
+    with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode="w", encoding="utf-8") as wf:
+        wf.write(WORKER_SCRIPT.format(version=UNITY_VERSION))
+        worker_path = wf.name
 
     try:
-        gc.collect()
+        result = subprocess.run(
+            [sys.executable, worker_path, bundle_path, str(path_id), tmp_path],
+            timeout=timeout,
+            capture_output=True,
+            text=True
+        )
 
-        data = obj.read()
-        obj_info["name"] = getattr(data, 'name', 'Unnamed')
-        obj_info["text"] = getattr(data, 'text', None)
+        if result.returncode == 0 and Path(tmp_path).exists():
+            with open(tmp_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        else:
+            return {
+                "path_id": path_id,
+                "success": False,
+                "error": f"Subprocess crash (code {result.returncode})",
+                "stderr": result.stderr[:500] if result.stderr else "",
+            }
 
-        # Typetree (source des crashes)
-        try:
-            tree = obj.read_typetree()
-            if tree:
-                obj_info["data"] = tree
-                obj_info["data_size"] = sys.getsizeof(tree)
-            else:
-                obj_info["data"] = None
-        except Exception as tree_err:
-            obj_info["typetree_error"] = str(tree_err)
-            obj_info["typetree_trace"] = traceback.format_exc()
-
-        # Images (Texture2D/Sprite)
-        if obj.type.name in ["Texture2D", "Sprite"]:
-            try:
-                img = data.image
-                obj_info["image_size"] = img.size
-                obj_info["image_format"] = str(img.format)
-            except:
-                obj_info["image_error"] = "Failed to read image"
-
-        obj_info["memory_after"] = memory_usage()
-        obj_info["success"] = True
-
+    except subprocess.TimeoutExpired:
+        return {"path_id": path_id, "success": False, "error": f"Timeout ({timeout}s)"}
     except Exception as e:
-        obj_info["error"] = str(e)
-        obj_info["trace"] = traceback.format_exc()
-        obj_info["success"] = False
-
+        return {"path_id": path_id, "success": False, "error": str(e)}
     finally:
-        gc.collect()
+        for p in [tmp_path, worker_path]:
+            try:
+                os.unlink(p)
+            except:
+                pass
 
-    return obj_info
+
+def list_path_ids(bundle_path: str) -> list[int]:
+    """Récupère la liste des path_ids sans lire les objets."""
+    env = UnityPy.load(bundle_path)
+    return [(obj.path_id, obj.type.name) for obj in env.objects]
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Debug d'un bundle Unity qui crash")
+    parser = argparse.ArgumentParser(description="Debug bundle Unity — subprocess par objet")
     parser.add_argument("bundle", help="Chemin vers le .bundle")
     parser.add_argument("--output", "-o", default=None, help="Fichier JSON de sortie")
-    parser.add_argument("--max-objs", "-m", type=int, default=500, help="Max objets à analyser")
+    parser.add_argument("--timeout", "-t", type=int, default=30, help="Timeout par objet en secondes (défaut: 30)")
+    parser.add_argument("--path-id", type=int, default=None, help="Lire un seul path_id spécifique")
     args = parser.parse_args()
 
-    bundle_path = Path(args.bundle)
-    if not bundle_path.exists():
-        print(f"❌ {bundle_path} introuvable")
+    bundle_path = str(Path(args.bundle))
+    if not Path(bundle_path).exists():
+        print(f"❌ Introuvable : {bundle_path}")
         sys.exit(1)
 
-    print(f"🎯 Debug : {bundle_path}")
-    print(f"📊 UnityPy: {UnityPy.config.FALLBACK_UNITY_VERSION}")
-    print(f"⏱️  Timeout/objet: {TIMEOUT_PER_OBJ}s")
-    print(f"🔢 Max objets: {args.max_objs}")
+    print(f"🎯 Bundle  : {bundle_path}")
+    print(f"📊 Unity   : {UNITY_VERSION}")
+    print(f"⏱️  Timeout : {args.timeout}s/objet")
+    print()
+
+    # Liste les objets sans les lire
+    UnityPy.config.FALLBACK_UNITY_VERSION = UNITY_VERSION
+    try:
+        objects = list_path_ids(bundle_path)
+    except Exception as e:
+        print(f"💥 Impossible de lire le bundle : {e}")
+        sys.exit(1)
+
+    if args.path_id:
+        objects = [(pid, t) for pid, t in objects if pid == args.path_id]
+
+    print(f"📦 {len(objects)} objet(s) détectés : {objects}")
     print()
 
     results = []
     crashes = []
-    total_objs = 0
-    success_count = 0
 
-    try:
-        env = UnityPy.load(str(bundle_path))
-        total_objs = len(env.objects)
-        print(f"📦 {total_objs} objets trouvés")
-        print()
+    for i, (path_id, type_name) in enumerate(objects):
+        print(f"  [{i+1}/{len(objects)}] path_id={path_id} | {type_name} ...", end=" ", flush=True)
+        result = read_obj_subprocess(bundle_path, path_id, timeout=args.timeout)
+        result["type"] = result.get("type", type_name)
+        results.append(result)
 
-        for i, obj in enumerate(env.objects):
-            if i >= args.max_objs:
-                print(f"⏹️  Limite atteinte ({args.max_objs} objets)")
-                break
+        if result["success"]:
+            name = result.get("name", "Unnamed")
+            data = result.get("data")
+            data_keys = list(data.keys())[:5] if isinstance(data, dict) else "N/A"
+            print(f"✅ {name!r} | clés: {data_keys}")
+        else:
+            err = result.get("error", "?")
+            print(f"❌ {err}")
+            crashes.append(path_id)
 
-            result = safe_read_obj(obj, i, total_objs)
-            results.append(result)
+    print()
+    print(f"✅ {len(results) - len(crashes)}/{len(objects)} OK")
+    if crashes:
+        print(f"❌ Crash sur path_ids : {crashes}")
 
-            if result["success"]:
-                success_count += 1
-            else:
-                crashes.append(i)
-
-            if (i + 1) % 50 == 0:
-                print(f"📈 [{i+1}/{total_objs}] {success_count} OK, {len(crashes)} crash")
-
-        print()
-        print(f"✅ {success_count}/{total_objs} objets OK")
-        if crashes:
-            print(f"❌ Crashes aux indices: {crashes[:10]}{'...' if len(crashes) > 10 else ''}")
-
-    except Exception as env_err:
-        print(f"💥 CRASH ENV: {env_err}")
-        crashes.append("ENVIRONMENT")
-
-    # Sauvegarde partielle
-    out_name = args.output or f"{bundle_path.stem}-debug.json"
+    out_name = args.output or f"{Path(args.bundle).stem}-debug.json"
     with open(out_name, "w", encoding="utf-8") as f:
         json.dump({
-            "bundle": str(bundle_path),
-            "total_objects": total_objs,
-            "success": success_count,
-            "crashes": crashes,
+            "bundle": bundle_path,
+            "total_objects": len(objects),
+            "success_count": len(results) - len(crashes),
+            "crashed_path_ids": crashes,
             "results": results,
-            "memory_peak": max((r.get("memory_after", 0) for r in results), default=0),
-        }, f, indent=2, default=str)
+        }, f, indent=2, default=str, ensure_ascii=False)
 
-    print(f"\n💾 Debug sauvé → {out_name}")
-    print(f"📊 Taille fichier : {Path(out_name).stat().st_size / 1024:.1f} Ko")
+    print(f"\n💾 Résultat → {out_name}  ({Path(out_name).stat().st_size / 1024:.1f} Ko)")
+
 
 if __name__ == "__main__":
     main()
