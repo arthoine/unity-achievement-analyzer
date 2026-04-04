@@ -3,10 +3,10 @@
 test.py - Parse et affiche les catégories d'achievements depuis un Asset Bundle Unity (Dofus)
 
 Utilisation:
-    python test.py
     python test.py --bundle chemin/vers/bundle.asset.bundle
-    python test.py --json output.json
-    python test.py --csv output.csv
+    python test.py --bundle ... --json output.json
+    python test.py --bundle ... --csv output.csv
+    python test.py --bundle ... --raw
 """
 
 import json
@@ -27,49 +27,69 @@ DEFAULT_BUNDLE = "data_assets_achievementcategoriesdataroot.asset.bundle"
 
 
 def parse_bundle(bundle_path: str) -> dict | None:
+    """
+    Ouvre un Asset Bundle Unity et extrait le MonoBehaviour AchievementCategoriesDataRoot.
+    Utilise read_typetree() pour obtenir un dict Python natif.
+    """
     env = UnityPy.load(bundle_path)
 
     for obj in env.objects:
-        if obj.type.name == "MonoBehaviour":
-            data = obj.read()
-            tree = data.type_tree if hasattr(data, 'type_tree') else vars(data)
-            name = getattr(data, 'm_Name', '') or tree.get('m_Name', '')
-            if 'AchievementCategoriesDataRoot' in str(name):
-                return {
-                    "bundle": str(bundle_path),
-                    "path_id": obj.path_id,
-                    "type": obj.type.name,
-                    "name": name,
-                    "data": tree
-                }
+        if obj.type.name != "MonoBehaviour":
+            continue
+        try:
+            tree = obj.read_typetree()
+        except Exception:
+            continue
+        if not tree:
+            continue
+        name = tree.get('m_Name', '')
+        if 'AchievementCategoriesDataRoot' in str(name):
+            return {
+                "bundle": str(bundle_path),
+                "path_id": obj.path_id,
+                "type": obj.type.name,
+                "name": name,
+                "data": tree
+            }
 
     return None
 
 
 def extract_categories(raw_data: dict) -> list[dict]:
+    """
+    Extrait la liste des AchievementCategoryData depuis le typetree.
+
+    Structure attendue dans references.RefIds:
+        [{ 'rid': ..., 'type': { 'class': 'AchievementCategoryData', ... }, 'data': { ... } }, ...]
+    """
     categories = []
 
-    try:
-        ref_ids = raw_data.get('references', {}).get('RefIds', [])
-    except AttributeError:
-        print("[AVERTISSEMENT] Structure 'references.RefIds' introuvable.", file=sys.stderr)
+    references = raw_data.get('references')
+    if not references:
+        print("[AVERTISSEMENT] Clé 'references' introuvable dans le typetree.", file=sys.stderr)
+        return categories
+
+    ref_ids = references.get('RefIds', [])
+    if not ref_ids:
+        print("[AVERTISSEMENT] 'references.RefIds' est vide ou absent.", file=sys.stderr)
         return categories
 
     for ref in ref_ids:
         ref_type = ref.get('type', {})
-        if ref_type.get('class') == 'AchievementCategoryData':
-            cat_data = ref.get('data', {})
-            categories.append({
-                'id':                   cat_data.get('id'),
-                'nameId':               cat_data.get('nameId'),
-                'parentId':             cat_data.get('parentId'),
-                'icon':                 cat_data.get('icon', ''),
-                'order':                cat_data.get('order'),
-                'color':                cat_data.get('color', ''),
-                'achievementIds':       cat_data.get('achievementIds', []),
-                'visibilityCriterion':  cat_data.get('visibilityCriterion', ''),
-                '_rid':                 ref.get('rid'),
-            })
+        if ref_type.get('class') != 'AchievementCategoryData':
+            continue
+        cat_data = ref.get('data', {})
+        categories.append({
+            'id':                  cat_data.get('id'),
+            'nameId':              cat_data.get('nameId'),
+            'parentId':            cat_data.get('parentId'),
+            'icon':                cat_data.get('icon', ''),
+            'order':               cat_data.get('order'),
+            'color':               cat_data.get('color', ''),
+            'achievementIds':      cat_data.get('achievementIds', []),
+            'visibilityCriterion': cat_data.get('visibilityCriterion', ''),
+            '_rid':                ref.get('rid'),
+        })
 
     categories.sort(key=lambda c: c['id'] or 0)
     return categories
@@ -101,10 +121,10 @@ def build_tree(categories: list[dict]) -> list[dict]:
 def print_tree(nodes: list[dict], indent: int = 0) -> None:
     prefix = '  ' * indent
     for node in nodes:
-        nb_achievements = len(node['achievementIds'])
+        nb = len(node['achievementIds'])
         color = f" [{node['color']}]" if node['color'] else ''
-        icon = f" (icon: {node['icon']}" if node['icon'] else ''
-        print(f"{prefix}[{node['id']}] nameId={node['nameId']}{color}{icon}  → {nb_achievements} achievement(s)")
+        icon = f" (icon: {node['icon']})" if node['icon'] else ''
+        print(f"{prefix}[{node['id']}] nameId={node['nameId']}{color}{icon}  → {nb} achievement(s)")
         if node['children']:
             print_tree(node['children'], indent + 1)
 
@@ -137,36 +157,18 @@ def main():
     parser = argparse.ArgumentParser(
         description='Parse un Asset Bundle Unity Dofus pour extraire les AchievementCategories'
     )
-    parser.add_argument(
-        '--bundle', '-b',
-        default=DEFAULT_BUNDLE,
-        help=f'Chemin vers le .bundle (défaut: {DEFAULT_BUNDLE})'
-    )
-    parser.add_argument(
-        '--unity-version', '-u',
-        default=None,
-        help='Forcer une version Unity (défaut: 6000.1.17f1)'
-    )
-    parser.add_argument(
-        '--json', '-j',
-        metavar='OUTPUT_JSON',
-        help='Exporter les catégories en JSON'
-    )
-    parser.add_argument(
-        '--csv', '-c',
-        metavar='OUTPUT_CSV',
-        help='Exporter les catégories en CSV'
-    )
-    parser.add_argument(
-        '--raw', '-r',
-        action='store_true',
-        help='Afficher le JSON brut du MonoBehaviour'
-    )
-    parser.add_argument(
-        '--flat', '-f',
-        action='store_true',
-        help="Afficher la liste plate des catégories au lieu de l'arbre"
-    )
+    parser.add_argument('--bundle', '-b', default=DEFAULT_BUNDLE,
+                        help=f'Chemin vers le .bundle (défaut: {DEFAULT_BUNDLE})')
+    parser.add_argument('--unity-version', '-u', default=None,
+                        help='Forcer une version Unity (défaut: 6000.1.17f1)')
+    parser.add_argument('--json', '-j', metavar='OUTPUT_JSON',
+                        help='Exporter les catégories en JSON')
+    parser.add_argument('--csv', '-c', metavar='OUTPUT_CSV',
+                        help='Exporter les catégories en CSV')
+    parser.add_argument('--raw', '-r', action='store_true',
+                        help='Afficher le JSON brut du typetree')
+    parser.add_argument('--flat', '-f', action='store_true',
+                        help="Afficher la liste plate au lieu de l'arbre")
     args = parser.parse_args()
 
     if args.unity_version:
@@ -178,10 +180,9 @@ def main():
         sys.exit(1)
 
     print(f"[...] Chargement du bundle : {bundle_path}")
-    print(f"[...] Unity version : {UnityPy.config.FALLBACK_UNITY_VERSION}")
+    print(f"[...] Unity version       : {UnityPy.config.FALLBACK_UNITY_VERSION}")
 
     raw = parse_bundle(str(bundle_path))
-
     if raw is None:
         print("[ERREUR] AchievementCategoriesDataRoot introuvable dans ce bundle.", file=sys.stderr)
         sys.exit(1)
