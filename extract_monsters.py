@@ -8,8 +8,8 @@ import glob
 import os
 import sys
 
-# Les JSON sont dans le même dossier que le script
-DATA_DIR = os.path.dirname(os.path.abspath(__file__))
+# Les JSON sont dans le sous-dossier output/
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 OUTPUT = os.path.join(DATA_DIR, "monsters.csv")
 
 def find_monster_bundles(data_dir):
