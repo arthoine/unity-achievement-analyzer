@@ -10,9 +10,9 @@ Prérequis :
 
 Usage :
     python map_items.py
-    python map_items.py --texts fr_texts.json --output output/
-    python map_items.py --texts fr_texts.json --output output/ --csv
-    python map_items.py --texts fr_texts.json --output output/ --search "Bouftou"
+    python map_items.py --texts fr_texts.json --assets output/assets_final.json
+    python map_items.py --texts fr_texts.json --assets output/assets_final.json --csv
+    python map_items.py --texts fr_texts.json --assets output/assets_final.json --search "Bouftou"
 
 Sorties :
     output/items_named.json        — items avec nom/description FR
@@ -22,7 +22,7 @@ Sorties :
 
 Source de données (par ordre de priorité) :
     1. Fichiers JSON individuels dans output/ (si générés par analyze_bundle.py)
-    2. assets_final.json (fallback automatique — extrait via references.RefIds)
+    2. assets_final.json (fallback automatique — filtré par classe Unity)
 """
 
 import json
@@ -34,7 +34,16 @@ import csv
 # ─── Chemins par défaut ───────────────────────────────────────────────────────
 DEFAULT_TEXTS  = "fr_texts.json"
 DEFAULT_OUTPUT = "output"
-ASSETS_FINAL   = "assets_final.json"
+ASSETS_FINAL   = "output/assets_final.json"
+
+# ─── Mapping bundle keyword → classe Unity attendue ───────────────────────────
+# Permet de distinguer ItemTypeData (232) de EvolutiveItemTypeData (2)
+BUNDLE_CLASS = {
+    "itemsdataroot":           "ItemData",
+    "itemtypesdataroot":       "ItemTypeData",
+    "itemsupertypesdataroot":  "ItemSuperTypeData",
+    "itemsetsdataroot":        "ItemSetData",
+}
 
 # ─── Positions d'équipement (slot id → label) ────────────────────────────────
 SLOT_NAMES = {
@@ -63,24 +72,35 @@ def t(texts: dict, nid, fallback="") -> str:
     return texts.get(int(nid), fallback or f"[nameId:{nid}]")
 
 
-def extract_refs(bundle_data: list) -> list:
-    """Extrait les RefIds depuis la structure Unity (references.RefIds)."""
-    for obj in bundle_data:
-        if obj.get("type") == "MonoBehaviour" and obj.get("data"):
-            refs = obj["data"].get("references", {}).get("RefIds", [])
-            if refs:
-                return refs
-    return []
-
-
-def refs_to_dict(refs: list) -> dict:
-    """Transforme les RefIds en dict id→data."""
+def refs_to_dict(refs: list, expected_class: str = None) -> dict:
+    """
+    Transforme les RefIds en dict id→data.
+    Si expected_class est fourni, ne garde que les refs dont type.class correspond.
+    """
     result = {}
     for ref in refs:
+        # Filtre par classe Unity si spécifié
+        if expected_class:
+            ref_class = ref.get("type", {}).get("class", "")
+            if ref_class and ref_class != expected_class:
+                continue
         d = ref.get("data", {})
         if isinstance(d, dict) and "id" in d:
             result[d["id"]] = d
     return result
+
+
+def extract_refs_from_bundle(bundle_data: list, expected_class: str = None) -> dict:
+    """Extrait et filtre les RefIds depuis un fichier bundle JSON individuel."""
+    for obj in bundle_data:
+        if obj.get("type") != "MonoBehaviour" or not obj.get("data"):
+            continue
+        refs = obj["data"].get("references", {}).get("RefIds", [])
+        if refs:
+            result = refs_to_dict(refs, expected_class)
+            if result:
+                return result
+    return {}
 
 
 def load_bundle_json(path: str) -> list:
@@ -95,20 +115,21 @@ def find_bundle(output_dir: str, keyword: str) -> str:
     if not os.path.isdir(output_dir):
         return ""
     for fname in os.listdir(output_dir):
-        if keyword in fname and fname.endswith(".json"):
+        if keyword in fname and fname.endswith(".json") and "assets_final" not in fname:
             return os.path.join(output_dir, fname)
     return ""
 
 
 def load_assets_final(path: str) -> list:
-    """Charge assets_final.json une seule fois et le met en cache."""
+    """Charge assets_final.json une seule fois (cache mémoire)."""
     if not hasattr(load_assets_final, "_cache"):
         if not os.path.exists(path):
+            load_assets_final._cache = []
             return []
-        print(f"   📂 Lecture assets_final.json ({path})…")
+        print(f"   📂 Lecture {path}…")
         with open(path, encoding="utf-8") as f:
             load_assets_final._cache = json.load(f)
-        print(f"   → {len(load_assets_final._cache):,} objets chargés")
+        print(f"   → {len(load_assets_final._cache):,} objets")
     return load_assets_final._cache
 
 
@@ -118,30 +139,30 @@ def main():
     )
     parser.add_argument("--texts",   default=DEFAULT_TEXTS,  help="Chemin vers fr_texts.json")
     parser.add_argument("--output",  default=DEFAULT_OUTPUT, help="Dossier de sortie")
-    parser.add_argument("--assets",  default=ASSETS_FINAL,   help="assets_final.json (fallback si pas de bundles individuels)")
+    parser.add_argument("--assets",  default=ASSETS_FINAL,   help="Chemin vers assets_final.json")
     parser.add_argument("--csv",     action="store_true",    help="Exporter aussi en CSV")
-    parser.add_argument("--search",  default=None,           help="Rechercher des items par nom FR (ex: --search Bouftou)")
-    parser.add_argument("--item-id", default=None, type=int, help="Afficher les détails d'un item par son ID")
-    parser.add_argument("--min-level", default=None, type=int, help="Filtrer items par niveau minimum")
-    parser.add_argument("--max-level", default=None, type=int, help="Filtrer items par niveau maximum")
-    parser.add_argument("--type-id",   default=None, type=int, help="Filtrer items par typeId")
+    parser.add_argument("--search",  default=None,           help="Rechercher des items par nom")
+    parser.add_argument("--item-id", default=None, type=int, help="Détail d'un item par ID")
+    parser.add_argument("--min-level", default=None, type=int)
+    parser.add_argument("--max-level", default=None, type=int)
+    parser.add_argument("--type-id",   default=None, type=int)
     args = parser.parse_args()
 
     os.makedirs(args.output, exist_ok=True)
 
-    # ─── Chargement textes FR ────────────────────────────────────────────────
-    print(f"📖 Textes FR       : {args.texts}")
+    # ─── Textes FR ─────────────────────────────────────────────────────────────
+    print(f"📖 Textes FR : {args.texts}")
     texts = load_texts(args.texts)
     print(f"   → {len(texts):,} textes (IDs {min(texts)} → {max(texts)})")
 
-    # ─── Chargement des bundles ──────────────────────────────────────────────
-    # Priorité 1 : fichiers individuels dans output/
-    # Priorité 2 : assets_final.json (extrait via references.RefIds du MonoBehaviour)
+    # ─── Chargement bundles ────────────────────────────────────────────────────
     def load_data(keyword):
-        # Priorité 1 — bundle individuel
+        expected_class = BUNDLE_CLASS.get(keyword)
+
+        # Priorité 1 — bundle individuel dans output/
         path = find_bundle(args.output, keyword)
         if path:
-            data = refs_to_dict(extract_refs(load_bundle_json(path)))
+            data = extract_refs_from_bundle(load_bundle_json(path), expected_class)
             if data:
                 return data
 
@@ -150,7 +171,9 @@ def main():
         if not all_objs:
             return {}
 
-        # Trouver le MonoBehaviour du DataRoot correspondant au keyword
+        # Parcourir tous les MonoBehaviour du bundle concerné
+        # et prendre celui dont les RefIds correspondent à la bonne classe Unity
+        best = {}
         for obj in all_objs:
             if keyword not in obj.get("bundle", ""):
                 continue
@@ -159,38 +182,21 @@ def main():
             d = obj.get("data", {})
             if not isinstance(d, dict):
                 continue
-            # Résolution via references.RefIds (structure Unity sérialisée)
             refs = d.get("references", {}).get("RefIds", [])
-            if refs:
-                result = refs_to_dict(refs)
-                if result:
-                    return result
-            # Résolution via objectsById (certains bundles utilisent cette clé)
-            obj_by_id = d.get("objectsById", {})
-            keys   = obj_by_id.get("m_keys", [])
-            values = obj_by_id.get("m_values", [])
-            if keys and values:
-                # m_values contient des {rid: X} → on résout les rids dans les RefIds globaux
-                rid_map = {}
-                global_refs = d.get("references", {}).get("RefIds", [])
-                for ref in global_refs:
-                    rid_map[ref.get("rid")] = ref.get("data", {})
-                result = {}
-                for kid, val in zip(keys, values):
-                    rid = val.get("rid")
-                    if rid and rid in rid_map:
-                        item_data = rid_map[rid]
-                        if isinstance(item_data, dict):
-                            result[kid] = item_data
-                if result:
-                    return result
-        return {}
+            if not refs:
+                continue
+            result = refs_to_dict(refs, expected_class)
+            # Garder le résultat le plus complet
+            if len(result) > len(best):
+                best = result
+
+        return best
 
     print("📦 Chargement bundles…")
-    items_raw      = load_data("itemsdataroot")
-    itemtypes_raw  = load_data("itemtypesdataroot")
-    supertype_raw  = load_data("itemsupertypesdataroot")
-    itemsets_raw   = load_data("itemsetsdataroot")
+    items_raw     = load_data("itemsdataroot")
+    itemtypes_raw = load_data("itemtypesdataroot")
+    supertype_raw = load_data("itemsupertypesdataroot")
+    itemsets_raw  = load_data("itemsetsdataroot")
 
     print(f"   Items       : {len(items_raw):,}")
     print(f"   ItemTypes   : {len(itemtypes_raw):,}")
@@ -198,9 +204,9 @@ def main():
     print(f"   ItemSets    : {len(itemsets_raw):,}")
 
     if not items_raw:
-        print("\n⚠️  Aucun item trouvé. Vérifie :")
-        print("   • Que assets_final.json est dans le dossier courant (ou --assets chemin)")
-        print("   • Ou que les bundles individuels sont dans output/")
+        print("\n⚠️  Aucun item trouvé.")
+        print(f"   Chemin assets_final.json utilisé : {args.assets}")
+        print("   Vérifie le chemin avec --assets")
         sys.exit(1)
 
     # ─── Résolution ItemTypes ────────────────────────────────────────────────
@@ -262,34 +268,34 @@ def main():
             ],
         }
 
-    # ─── Rattacher le nom du set aux items ───────────────────────────────────
+    # Rattacher nom du set aux items
     for sid, s in itemsets_named.items():
-        for item_stub in s["items"]:
-            iid = item_stub["id"]
-            if iid in items_named:
-                items_named[iid]["itemSetName"] = s["name"]
+        for stub in s["items"]:
+            if stub["id"] in items_named:
+                items_named[stub["id"]]["itemSetName"] = s["name"]
 
     # ─── Export JSON ─────────────────────────────────────────────────────────
     items_list     = sorted(items_named.values(),     key=lambda x: x["id"])
     itemtypes_list = sorted(itemtypes_named.values(), key=lambda x: x["id"])
     itemsets_list  = sorted(itemsets_named.values(),  key=lambda x: x["id"])
 
-    out_items     = os.path.join(args.output, "items_named.json")
-    out_types     = os.path.join(args.output, "itemtypes_named.json")
-    out_sets      = os.path.join(args.output, "itemsets_named.json")
+    def write_json(data, path):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
-    with open(out_items, "w", encoding="utf-8") as f:
-        json.dump(items_list, f, ensure_ascii=False, indent=2)
-    with open(out_types, "w", encoding="utf-8") as f:
-        json.dump(itemtypes_list, f, ensure_ascii=False, indent=2)
-    with open(out_sets, "w", encoding="utf-8") as f:
-        json.dump(itemsets_list, f, ensure_ascii=False, indent=2)
+    out_items = os.path.join(args.output, "items_named.json")
+    out_types = os.path.join(args.output, "itemtypes_named.json")
+    out_sets  = os.path.join(args.output, "itemsets_named.json")
 
-    print(f"\n✅ {len(items_list):,} items       → {out_items}")
-    print(f"✅ {len(itemtypes_list):,} item types  → {out_types}")
-    print(f"✅ {len(itemsets_list):,} item sets   → {out_sets}")
+    write_json(items_list,     out_items)
+    write_json(itemtypes_list, out_types)
+    write_json(itemsets_list,  out_sets)
 
-    # ─── Export CSV (optionnel) ───────────────────────────────────────────────
+    print(f"\n✅ {len(items_list):,} items      → {out_items}")
+    print(f"✅ {len(itemtypes_list):,} item types → {out_types}")
+    print(f"✅ {len(itemsets_list):,} item sets  → {out_sets}")
+
+    # ─── Export CSV ─────────────────────────────────────────────────────────
     if args.csv:
         out_csv = os.path.join(args.output, "items_named.csv")
         fields = ["id", "name", "typeName", "slots", "level", "price",
@@ -304,19 +310,19 @@ def main():
                 row["slots"] = ", ".join(item.get("slots", []))
                 row["itemSetName"] = item.get("itemSetName", "")
                 w.writerow(row)
-        print(f"✅ CSV              → {out_csv}")
+        print(f"✅ CSV             → {out_csv}")
 
     # ─── Mode recherche ──────────────────────────────────────────────────────
     if args.search:
         query = args.search.lower()
         results = [i for i in items_list if query in i["name"].lower()]
-        print(f"\n🔍 Recherche '{args.search}' → {len(results)} résultats")
+        print(f"\n🔍 '{args.search}' → {len(results)} résultats")
         for item in results[:30]:
-            set_name = f" (set: {item.get('itemSetName', '')})"
             slots = ", ".join(item["slots"]) or item["typeName"]
-            print(f"  [{item['id']:>6}] Nv{item['level']:>3}  {item['name']:<35} {slots}{set_name if item.get('itemSetName') else ''}")
+            sname = f" (set: {item['itemSetName']})" if item.get("itemSetName") else ""
+            print(f"  [{item['id']:>6}] Nv{item['level']:>3}  {item['name']:<35} {slots}{sname}")
         if len(results) > 30:
-            print(f"  ... et {len(results)-30} autres résultats")
+            print(f"  … et {len(results)-30} autres")
 
     # ─── Mode détail item ────────────────────────────────────────────────────
     if args.item_id:
@@ -333,8 +339,8 @@ def main():
                 if s:
                     print(f"\n  🎽 Set '{s['name']}' ({len(s['items'])} pièces):")
                     for piece in sorted(s["items"], key=lambda x: x["level"]):
-                        marker = "→" if piece["id"] == item["id"] else " "
-                        print(f"    {marker} [{piece['id']:>6}] Nv{piece['level']:>3}  {piece['name']}")
+                        m = "→" if piece["id"] == item["id"] else " "
+                        print(f"    {m} [{piece['id']:>6}] Nv{piece['level']:>3}  {piece['name']}")
 
     # ─── Filtre niveau / type ────────────────────────────────────────────────
     if args.min_level is not None or args.max_level is not None or args.type_id:
@@ -345,14 +351,14 @@ def main():
             filtered = [i for i in filtered if i["level"] <= args.max_level]
         if args.type_id:
             filtered = [i for i in filtered if i["typeId"] == args.type_id]
-        lvl_range = f"nv {args.min_level or '?'}-{args.max_level or '?'}"
-        print(f"\n🎯 Filtre ({lvl_range}, type={args.type_id or 'tous'}) → {len(filtered)} items")
+        lvl = f"nv {args.min_level or '?'}-{args.max_level or '?'}"
+        print(f"\n🎯 Filtre ({lvl}, type={args.type_id or 'tous'}) → {len(filtered)} items")
         for item in filtered[:20]:
             print(f"  [{item['id']:>6}] Nv{item['level']:>3}  {item['name']:<35} ({item['typeName']})")
         if len(filtered) > 20:
-            print(f"  ... et {len(filtered)-20} autres")
+            print(f"  … et {len(filtered)-20} autres")
 
-    # ─── Aperçu des sets ─────────────────────────────────────────────────────
+    # ─── Aperçu sets ───────────────────────────────────────────────────────────
     print("\n--- Aperçu sets (5 premiers) ---")
     for s in itemsets_list[:5]:
         pieces = ", ".join(p["name"] for p in s["items"][:3])
