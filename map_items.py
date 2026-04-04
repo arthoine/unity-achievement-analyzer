@@ -36,13 +36,14 @@ DEFAULT_TEXTS  = "fr_texts.json"
 DEFAULT_OUTPUT = "output"
 ASSETS_FINAL   = "output/assets_final.json"
 
-# ─── Mapping bundle keyword → classe Unity attendue ───────────────────────────
-# Permet de distinguer ItemTypeData (232) de EvolutiveItemTypeData (2)
-BUNDLE_CLASS = {
-    "itemsdataroot":           "ItemData",
-    "itemtypesdataroot":       "ItemTypeData",
-    "itemsupertypesdataroot":  "ItemSuperTypeData",
-    "itemsetsdataroot":        "ItemSetData",
+# ─── Mapping bundle keyword → classes Unity acceptées (set) ─────────────────────
+# None = accepter toutes les classes (pas de filtre)
+# set  = accepter uniquement ces classes (exclut sous-classes inattendues)
+BUNDLE_CLASSES = {
+    "itemsdataroot":          {"ItemData", "WeaponData"},   # WeaponData hérite d'ItemData
+    "itemtypesdataroot":      {"ItemTypeData"},             # exclut EvolutiveItemTypeData
+    "itemsupertypesdataroot": {"ItemSuperTypeData"},
+    "itemsetsdataroot":       {"ItemSetData"},
 }
 
 # ─── Positions d'équipement (slot id → label) ────────────────────────────────
@@ -72,17 +73,17 @@ def t(texts: dict, nid, fallback="") -> str:
     return texts.get(int(nid), fallback or f"[nameId:{nid}]")
 
 
-def refs_to_dict(refs: list, expected_class: str = None) -> dict:
+def refs_to_dict(refs: list, accepted_classes: set = None) -> dict:
     """
     Transforme les RefIds en dict id→data.
-    Si expected_class est fourni, ne garde que les refs dont type.class correspond.
+    Si accepted_classes est fourni, ne garde que les refs dont type.class est dans le set.
+    Les refs sans type.class déclaré (null/vide) sont toujours incluses.
     """
     result = {}
     for ref in refs:
-        # Filtre par classe Unity si spécifié
-        if expected_class:
+        if accepted_classes:
             ref_class = ref.get("type", {}).get("class", "")
-            if ref_class and ref_class != expected_class:
+            if ref_class and ref_class not in accepted_classes:
                 continue
         d = ref.get("data", {})
         if isinstance(d, dict) and "id" in d:
@@ -90,14 +91,14 @@ def refs_to_dict(refs: list, expected_class: str = None) -> dict:
     return result
 
 
-def extract_refs_from_bundle(bundle_data: list, expected_class: str = None) -> dict:
+def extract_refs_from_bundle(bundle_data: list, accepted_classes: set = None) -> dict:
     """Extrait et filtre les RefIds depuis un fichier bundle JSON individuel."""
     for obj in bundle_data:
         if obj.get("type") != "MonoBehaviour" or not obj.get("data"):
             continue
         refs = obj["data"].get("references", {}).get("RefIds", [])
         if refs:
-            result = refs_to_dict(refs, expected_class)
+            result = refs_to_dict(refs, accepted_classes)
             if result:
                 return result
     return {}
@@ -157,23 +158,23 @@ def main():
 
     # ─── Chargement bundles ────────────────────────────────────────────────────
     def load_data(keyword):
-        expected_class = BUNDLE_CLASS.get(keyword)
+        accepted = BUNDLE_CLASSES.get(keyword)  # set ou None
 
         # Priorité 1 — bundle individuel dans output/
         path = find_bundle(args.output, keyword)
         if path:
-            data = extract_refs_from_bundle(load_bundle_json(path), expected_class)
+            data = extract_refs_from_bundle(load_bundle_json(path), accepted)
             if data:
                 return data
 
         # Priorité 2 — assets_final.json
+        # Fusionner TOUS les MonoBehaviour du bundle (un seul en pratique,
+        # mais on fusionne au cas où les données seraient réparties sur plusieurs)
         all_objs = load_assets_final(args.assets)
         if not all_objs:
             return {}
 
-        # Parcourir tous les MonoBehaviour du bundle concerné
-        # et prendre celui dont les RefIds correspondent à la bonne classe Unity
-        best = {}
+        merged = {}
         for obj in all_objs:
             if keyword not in obj.get("bundle", ""):
                 continue
@@ -185,12 +186,9 @@ def main():
             refs = d.get("references", {}).get("RefIds", [])
             if not refs:
                 continue
-            result = refs_to_dict(refs, expected_class)
-            # Garder le résultat le plus complet
-            if len(result) > len(best):
-                best = result
+            merged.update(refs_to_dict(refs, accepted))
 
-        return best
+        return merged
 
     print("📦 Chargement bundles…")
     items_raw     = load_data("itemsdataroot")
@@ -241,6 +239,7 @@ def main():
             "realWeight": d.get("realWeight", 0),
             "itemSetId": d.get("itemSetId", -1),
             "iconId": d.get("iconId", 0),
+            # Champs arme (WeaponData) — 0 si item normal
             "apCost": d.get("apCost", 0),
             "range": d.get("range", 0),
             "criticalHitProbability": d.get("criticalHitProbability", 0),
