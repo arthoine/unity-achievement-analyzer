@@ -10,14 +10,11 @@ import sys
 import subprocess
 import tempfile
 
-# Version Unity principale (Dofus 3)
 UNITY_VERSION = "6000.1.17f1"
-# Versions alternatives essayées si la principale crash
 ALT_VERSIONS = ["2022.3.20f1", "2021.3.27f1", "2020.3.48f1"]
 
 UnityPy.config.FALLBACK_UNITY_VERSION = UNITY_VERSION
 
-# Script worker isolé par objet (utilisé comme dernier recours)
 PER_OBJ_WORKER = '''
 import warnings; warnings.filterwarnings("ignore")
 import UnityPy, json, sys
@@ -51,9 +48,7 @@ with open(out_file, "w", encoding="utf-8") as f:
     json.dump(result, f, default=str, ensure_ascii=False)
 '''
 
-parser = argparse.ArgumentParser(
-    description="Extrait les assets Unity depuis des fichiers .bundle"
-)
+parser = argparse.ArgumentParser(description="Extrait les assets Unity depuis des fichiers .bundle")
 parser.add_argument("--bundle-dir", default="data")
 parser.add_argument("--catalog", default=None)
 parser.add_argument("--hash", default=None)
@@ -69,7 +64,7 @@ if args.unity_version:
     UNITY_VERSION = args.unity_version
     UnityPy.config.FALLBACK_UNITY_VERSION = UNITY_VERSION
 
-# ─── MODE WORKER : traite UN bundle entier en un process ────────────────────────────
+# ─── MODE WORKER ───────────────────────────────────────────────────────────────────────
 if args.worker:
     bundle_path = args.worker
     name = os.path.basename(bundle_path)
@@ -115,9 +110,8 @@ if args.worker:
         json.dump(results, f, ensure_ascii=False)
     sys.exit(0)
 
-# ─── HELPERS ────────────────────────────────────────────────────────────────────────
+# ─── HELPERS ───────────────────────────────────────────────────────────────────────────
 def run_worker(bundle_path, version, output, extract_images, no_typetree=False, timeout=120):
-    """Worker bundle entier. Retourne True si JSON non vide produit."""
     out_path = os.path.join(output, os.path.basename(bundle_path) + ".json")
     cmd = [sys.executable, __file__, "--worker", bundle_path,
            "--output", output, "--worker-version", version]
@@ -126,7 +120,7 @@ def run_worker(bundle_path, version, output, extract_images, no_typetree=False, 
     try:
         result = subprocess.run(cmd, timeout=timeout, capture_output=True)
         if result.returncode == 0 and os.path.exists(out_path):
-            with open(out_path, "r") as f:
+            with open(out_path, "r", encoding="utf-8") as f:  # FIX: utf-8
                 content = json.load(f)
             return len(content) > 0
         return False
@@ -135,15 +129,8 @@ def run_worker(bundle_path, version, output, extract_images, no_typetree=False, 
 
 
 def run_per_object(bundle_path, version, output, timeout=60):
-    """
-    Dernier recours : lit chaque objet dans un subprocess isolé.
-    Identique à la stratégie de analyze_single.py.
-    Retourne True si au moins un objet MonoBehaviour avec data a été récupéré.
-    """
     name = os.path.basename(bundle_path)
     os.makedirs(output, exist_ok=True)
-
-    # Liste les path_ids dans le process courant (listing seul ne crash pas)
     UnityPy.config.FALLBACK_UNITY_VERSION = version
     try:
         env = UnityPy.load(bundle_path)
@@ -151,7 +138,6 @@ def run_per_object(bundle_path, version, output, timeout=60):
     except Exception:
         return False
 
-    # Écrit le script worker dans un fichier temp
     with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode="w", encoding="utf-8") as wf:
         wf.write(PER_OBJ_WORKER)
         worker_path = wf.name
@@ -179,8 +165,7 @@ def run_per_object(bundle_path, version, output, timeout=60):
                         obj_info["data"] = obj_result["data"]
                     results.append(obj_info)
             except subprocess.TimeoutExpired:
-                results.append({"bundle": name, "path_id": path_id, "type": type_name,
-                                 "error": "timeout"})
+                results.append({"bundle": name, "path_id": path_id, "type": type_name, "error": "timeout"})
             finally:
                 try: os.unlink(tmp_path)
                 except: pass
@@ -190,14 +175,13 @@ def run_per_object(bundle_path, version, output, timeout=60):
 
     if not results:
         return False
-
     out_path = os.path.join(output, name + ".json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False)
     return any("data" in r for r in results)
 
 
-# ─── MODE PRINCIPAL ─────────────────────────────────────────────────────────────────
+# ─── MODE PRINCIPAL ──────────────────────────────────────────────────────────────────────
 print(f"🎮 Unity version : {UnityPy.config.FALLBACK_UNITY_VERSION}")
 os.makedirs(args.output, exist_ok=True)
 
@@ -224,7 +208,7 @@ for i, bundle_path in enumerate(bundle_files, 1):
 
     if os.path.exists(out_path):
         try:
-            with open(out_path, "r") as f:
+            with open(out_path, "r", encoding="utf-8") as f:  # FIX: utf-8
                 existing = json.load(f)
             if len(existing) > 0:
                 print(f"[{i}/{total}] ✅ déjà traité : {name}")
@@ -234,10 +218,8 @@ for i, bundle_path in enumerate(bundle_files, 1):
 
     print(f"[{i}/{total}] 🔍 {name}", flush=True)
 
-    # ── T1 : version principale + typetree
     ok = run_worker(bundle_path, UNITY_VERSION, args.output, args.extract_images)
 
-    # ── T2-4 : versions alternatives + typetree
     if not ok:
         for alt_v in ALT_VERSIONS:
             print(f"  🔄 Retry {alt_v}...", end=" ", flush=True)
@@ -245,14 +227,12 @@ for i, bundle_path in enumerate(bundle_files, 1):
             if ok: print(f"✅ OK avec {alt_v}"); break
             else:  print("❌")
 
-    # ── T5 : principale sans typetree
     if not ok:
         print(f"  🔄 Retry sans typetree...", end=" ", flush=True)
         ok = run_worker(bundle_path, UNITY_VERSION, args.output, args.extract_images,
                         no_typetree=True, timeout=180)
         if ok: print("✅ OK (sans typetree)")
 
-    # ── T6-8 : alternatives sans typetree
     if not ok:
         for alt_v in ALT_VERSIONS:
             print(f"  🔄 Retry {alt_v} sans typetree...", end=" ", flush=True)
@@ -261,7 +241,6 @@ for i, bundle_path in enumerate(bundle_files, 1):
             if ok: print(f"✅ OK avec {alt_v} (sans typetree)"); break
             else:  print("❌")
 
-    # ── T9 (dernier recours) : per-object subprocess (stratégie analyze_single)
     if not ok:
         print(f"  🔄 Retry per-object...", end=" ", flush=True)
         for v in [UNITY_VERSION] + ALT_VERSIONS:
@@ -273,7 +252,7 @@ for i, bundle_path in enumerate(bundle_files, 1):
         print(f"  ❌ crash irrécupérable")
         crashes.append(name)
 
-# ─── FUSION ────────────────────────────────────────────────────────────────────────
+# ─── FUSION ───────────────────────────────────────────────────────────────────────────────
 print(f"\n📦 Fusion des résultats...")
 all_objects = []
 for bundle_path in bundle_files:
