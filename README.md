@@ -1,106 +1,146 @@
 # unity-achievement-analyzer
 
-Extraction et analyse des achievements Dofus 3 depuis les Unity Asset Bundles.
+Extraction et mapping des données **Dofus 3** depuis les Unity Asset Bundles pour générer des fichiers exploitables, notamment :
 
-> `parse_fr.py` est désormais intégré directement dans ce repo — plus besoin de `dofus-data-extractor`.
+- `output/items_named.csv`
+- `output/monsters_named.csv`
 
-## Scripts
+## Prérequis
 
-| Script | Rôle |
-|--------|------|
-| `parse_fr.py` | Parse `fr.bin` → `fr_texts.json` (332k textes FR) |
-| `analyze_bundle.py` | Parcourt les `.bundle` → `output/assets_final.json` |
-| `resolve_names.py` | Résout les nameId → `achievements_fr.json` (arbre FR) |
-| `test.py` | Debug / exploration d'un bundle unique |
+- Python 3.10+
+- Windows
+- Dofus 3 installé
 
-## Installation
+Installe les dépendances :
 
 ```bash
 pip install -r requirements.txt
 ```
 
+## Où récupérer les fichiers Dofus
+
+Les bundles Unity sont à récupérer ici :
+
+```text
+C:\Users\Antoine\AppData\Local\Ankama\Dofus-dofus3\Dofus_Data\StreamingAssets\Content
+```
+
+Dans ce repo, colle les fichiers nécessaires dans le dossier :
+
+```text
+input/
+```
+
+Tu peux copier directement les bundles utiles depuis le dossier Dofus vers `input/`.
+
+## Fichiers à copier
+
+### Pour les items
+
+Copie dans `input/` :
+
+```text
+data_assets_itemsdataroot.asset.bundle
+data_assets_itemtypesdataroot.asset.bundle
+data_assets_itemsupertypesdataroot.asset.bundle
+data_assets_itemsetsdataroot.asset.bundle
+```
+
+### Pour les monstres
+
+Copie dans `input/` :
+
+```text
+data_assets_monstersdataroot.asset.bundle
+data_assets_monsterracesdataroot.asset.bundle
+data_assets_monstersuperracesdataroot.asset.bundle
+data_assets_monsterminibossesdataroot.asset.bundle
+```
+
+### Pour les textes FR
+
+Le script lit aussi les textes français depuis le fichier `fr.bin` de Dofus.
+
+Chemin habituel :
+
+```text
+C:\Users\Antoine\AppData\Local\Ankama\Dofus-dofus3\Dofus_Data\StreamingAssets\Content\I18n\fr.bin
+```
+
 ## Pipeline complet
 
-### Étape 1 — Générer fr_texts.json
+### 1. Générer `fr_texts.json`
 
 ```bash
-# Chemin auto-détecté (installation Dofus standard Windows)
-python parse_fr.py
-
-# Ou avec un chemin custom
-python parse_fr.py --input "C:\...\I18n\fr.bin" --output fr_texts.json
-
-# Avec aperçu des nameIds catégories achievements
-python parse_fr.py --preview
+python parse_fr.py --input "C:\Users\Antoine\AppData\Local\Ankama\Dofus-dofus3\Dofus_Data\StreamingAssets\Content\I18n\fr.bin" --output fr_texts.json
 ```
 
-### Étape 2 — Extraire les bundles
+### 2. Extraire les bundles Unity en JSON
 
 ```bash
-# Copier les bundles achievement dans data/
-cp .../Content/Data/data_assets_achievement*.bundle data/
-
-python analyze_bundle.py --bundle-dir data/ --output output/
-# → génère output/assets_final.json
+python analyze_bundle.py --bundle-dir input/ --output output/
 ```
 
-### Étape 3 — Résoudre les noms FR
+Cette commande génère notamment :
+
+- `output/assets_final.json`
+- des fichiers JSON individuels dans `output/`
+
+### 3. Générer le CSV des items
 
 ```bash
-python resolve_names.py \
-  --texts  fr_texts.json \
-  --assets output/assets_final.json \
-  --output achievements_fr.json
+python map_items.py --texts fr_texts.json --assets output/assets_final.json --csv
 ```
 
-### Options
+Sorties générées :
 
-**`parse_fr.py`**
+- `output/items_named.json`
+- `output/itemtypes_named.json`
+- `output/itemsets_named.json`
+- `output/items_named.csv`
 
-| Option | Défaut | Description |
-|--------|--------|-------------|
-| `--input` | `%LOCALAPPDATA%\Ankama\...\fr.bin` | Chemin vers fr.bin |
-| `--output` | `fr_texts.json` | Fichier JSON de sortie |
-| `--preview` | false | Affiche un aperçu des nameIds achievements |
+### 4. Générer le CSV des monstres
 
-**`resolve_names.py`**
-
-| Option | Défaut | Description |
-|--------|--------|-------------|
-| `--texts` | `fr_texts.json` | Chemin vers fr_texts.json |
-| `--assets` | `output/assets_final.json` | Chemin vers assets_final.json |
-| `--output` | `achievements_fr.json` | Fichier de sortie |
-| `--flat` | false | Sortie plate au lieu de l'arbre catégories→achievements |
-
-## Sortie (arbre)
-
-```json
-[
-  {
-    "id": 1,
-    "name": "Donjons",
-    "order": 0,
-    "achievements": [
-      {
-        "id": 74,
-        "name": "Larve Royale",
-        "description": "Terminer le donjon Larve Royale.",
-        "points": 10,
-        "objectives": [
-          { "id": 101, "name": "Vaincre la Larve Royale", "order": 0 }
-        ],
-        "rewards": []
-      }
-    ]
-  }
-]
+```bash
+python map_monsters.py --texts fr_texts.json --assets output/assets_final.json --csv
 ```
 
-## Bundles sources
+Sorties générées :
 
-| Bundle | Contenu |
-|--------|---------|
-| `data_assets_achievementcategoriesdataroot.asset.bundle` | Catégories |
-| `data_assets_achievementsdataroot.asset.bundle` | Achievements |
-| `data_assets_achievementobjectivesdataroot.asset.bundle` | Objectifs |
-| `data_assets_achievementrewardsdataroot.asset.bundle` | Récompenses |
+- `output/monsters_named.json`
+- `output/monsterraces_named.json`
+- `output/monsters_named.csv`
+
+## Commandes minimales à lancer
+
+Si tu veux juste produire les 2 CSVs :
+
+```bash
+python parse_fr.py --input "C:\Users\Antoine\AppData\Local\Ankama\Dofus-dofus3\Dofus_Data\StreamingAssets\Content\I18n\fr.bin" --output fr_texts.json
+python analyze_bundle.py --bundle-dir input/ --output output/
+python map_items.py --texts fr_texts.json --assets output/assets_final.json --csv
+python map_monsters.py --texts fr_texts.json --assets output/assets_final.json --csv
+```
+
+## Résultat final
+
+À la fin, tu obtiens :
+
+```text
+output/items_named.csv
+output/monsters_named.csv
+```
+
+## Scripts utiles
+
+| Script | Rôle |
+|---|---|
+| `parse_fr.py` | Parse `fr.bin` en `fr_texts.json` |
+| `analyze_bundle.py` | Extrait les bundles Unity vers `output/` |
+| `map_items.py` | Construit les données items et exporte `items_named.csv` |
+| `map_monsters.py` | Construit les données monstres et exporte `monsters_named.csv` |
+
+## Notes
+
+- Le dossier source Dofus contient beaucoup de bundles, mais seuls ceux listés plus haut sont nécessaires pour générer les CSVs items et monstres.
+- Les anciens tests, essais et docs peuvent être déplacés dans `old/` pour garder le repo propre.
